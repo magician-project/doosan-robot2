@@ -13,7 +13,7 @@
 
 #include <chrono>
 #include <cmath>
-#include <DRFC.h>
+#include <iostream>
 #include <thread>
 
 #include <hardware_interface/handle.hpp>
@@ -21,17 +21,19 @@
 #include <hardware_interface/types/hardware_interface_type_values.hpp>
 #include <rclcpp/logging.hpp>
 
+#include "DRFC.h"
 #include "DRFLEx.h"
 
 using dsr_hardware2::DRHWInterface;
+using std::cout, std::endl;
 
 using CallbackReturn = dsr_hardware2::DRHWInterface::CallbackReturn;
 using return_type    = dsr_hardware2::DRHWInterface::return_type;
 
 // Global variables
 DRAFramework::CDRFLEx drfl;
-bool                  has_control_authority       = FALSE;
-bool                  tp_initialisation_completed = FALSE;
+bool                  has_control_authority       = false;
+bool                  tp_initialisation_completed = false;
 
 // Configuration variables
 const std::string  host_ip       = "192.168.127.100";
@@ -39,6 +41,31 @@ const unsigned int host_tcp_port = 12345;
 const unsigned int host_udp_port = 12347;
 
 constexpr float None = -10000;
+
+// Callback functions declaration
+namespace callback {
+// Callbacks that do not modify the global state
+void on_tp_popup(LPMESSAGE_POPUP popup);
+void on_tp_log(const char* strLog);
+void on_tp_progress(LPMESSAGE_PROGRESS progress);
+void on_tp_get_user_input(LPMESSAGE_INPUT input);
+void on_homing_completed();
+void on_monitoring_data(const LPMONITORING_DATA pData);
+void on_monitoring_data_exchange(const LPMONITORING_DATA_EX pData);
+void on_monitoring_ctrl_io(const LPMONITORING_CTRLIO pData);
+void on_monitoring_ctrl_io_exchange(const LPMONITORING_CTRLIO_EX pData);
+void on_log_alarm(LPLOG_ALARM tLog);
+void on_program_stopped(const PROGRAM_STOP_CAUSE);
+
+// Callbacks that can modify the global state
+void on_tp_initialising_completed();
+void on_monitoring_state(const ROBOT_STATE);
+void on_monitoring_access_control(const MONITORING_ACCESS_CONTROL control);
+}  // namespace callback
+
+/* NOTE
+ * The only callback missing is the one for RT data stream input.
+ */
 
 // Conversion functions
 auto double_to_float = [](const double& data) -> float {
@@ -48,6 +75,19 @@ auto double_to_float = [](const double& data) -> float {
 auto float_to_double = [](const float& data) -> double {
     return static_cast<double>(data);
 };
+
+//  _   _               _
+// | | | | __ _ _ __ __| |_      ____ _ _ __ ___
+// | |_| |/ _` | '__/ _` \ \ /\ / / _` | '__/ _ \
+// |  _  | (_| | | | (_| |\ V  V / (_| | | |  __/
+// |_| |_|\__,_|_|  \__,_| \_/\_/ \__,_|_|  \___|
+//
+//  ___       _             __
+// |_ _|_ __ | |_ ___ _ __ / _| __ _  ___ ___
+//  | || '_ \| __/ _ \ '__| |_ / _` |/ __/ _ \
+//  | || | | | ||  __/ |  |  _| (_| | (_|  __/
+// |___|_| |_|\__\___|_|  |_|  \__,_|\___\___|
+//
 
 CallbackReturn
 DRHWInterface::on_init(const hardware_interface::HardwareInfo& info) {
@@ -66,13 +106,28 @@ DRHWInterface::on_init(const hardware_interface::HardwareInfo& info) {
     _q_dot_cmd   = Vec6double::Zero();
     _tau_cmd     = Vec6double::Zero();
 
-
     _q_dot_limit     = 70 * Vec6float::Ones();
     _q_dot_dot_limit = 70 * Vec6float::Ones();
     _tau_grav        = Vec6float::Zero();
 
 
-    // TODO: register callback here
+    // Register callbacks (non-modifying)
+    drfl.set_on_homming_completed(callback::on_homing_completed);
+    drfl.set_on_monitoring_data(callback::on_monitoring_data);
+    drfl.set_on_monitoring_data_ex(callback::on_monitoring_data_exchange);
+    drfl.set_on_monitoring_ctrl_io(callback::on_monitoring_ctrl_io);
+    drfl.set_on_monitoring_ctrl_io_ex(callback::on_monitoring_ctrl_io_exchange);
+    drfl.set_on_log_alarm(callback::on_log_alarm);
+    drfl.set_on_tp_popup(callback::on_tp_popup);
+    drfl.set_on_tp_log(callback::on_tp_log);
+    drfl.set_on_tp_progress(callback::on_tp_progress);
+    drfl.set_on_tp_get_user_input(callback::on_tp_get_user_input);
+    drfl.set_on_program_stopped(callback::on_program_stopped);
+
+    // Register callbacks (the following CAN modify the global state)
+    drfl.set_on_monitoring_state(callback::on_monitoring_state);
+    drfl.set_on_monitoring_access_control(callback::on_monitoring_access_control);
+    drfl.set_on_tp_initializing_completed(callback::on_tp_initialising_completed);
 
 
     // Communication initialisation and robot setup
@@ -93,6 +148,8 @@ DRHWInterface::on_init(const hardware_interface::HardwareInfo& info) {
     };
     if (!drfl.get_system_version(&sys_version)) return CallbackReturn::ERROR;
     if (!drfl.setup_monitoring_version(1)) return CallbackReturn::ERROR;
+    drfl.set_robot_control(CONTROL_SERVO_ON);
+    drfl.set_digital_output(GPIO_CTRLBOX_DIGITAL_INDEX_10, TRUE);
     RCLCPP_INFO(get_logger(), "System version: %s", sys_version._szController);
     RCLCPP_INFO(get_logger(), "Libray version: %s", drfl.get_library_version());
 
@@ -318,6 +375,161 @@ DRHWInterface::write(const rclcpp::Time& /*time*/, const rclcpp::Duration& /*per
             break;
     }
     return return_type::OK;
+}
+
+//   ____      _ _ _                _
+//  / ___|__ _| | | |__   __ _  ___| | _____
+// | |   / _` | | | '_ \ / _` |/ __| |/ / __|
+// | |__| (_| | | | |_) | (_| | (__|   <\__ \
+//  \____\__,_|_|_|_.__/ \__,_|\___|_|\_\___/
+//
+void
+callback::on_tp_popup(LPMESSAGE_POPUP tPopup) {
+    cout << "Popup Message: " << tPopup->_szText << endl;
+    cout << "Message Level: " << tPopup->_iLevel << endl;
+    cout << "Button Type: " << tPopup->_iBtnType << endl;
+}
+
+void
+callback::on_tp_log(const char* strLog) {
+    cout << "Log Message: " << strLog << endl;
+}
+
+void
+callback::on_tp_progress(LPMESSAGE_PROGRESS tProgress) {
+    cout << "Progress cnt : " << (int)tProgress->_iTotalCount << endl;
+    cout << "Current cnt : " << (int)tProgress->_iCurrentCount << endl;
+}
+
+void
+callback::on_tp_get_user_input(LPMESSAGE_INPUT tInput) {
+    cout << "User Input : " << tInput->_szText << endl;
+    cout << "Data Type : " << (int)tInput->_iType << endl;
+}
+
+void
+callback::on_homing_completed() {
+    cout << "homing completed" << endl;
+}
+
+void
+callback::on_monitoring_data(const LPMONITORING_DATA pData) {
+    return;
+    cout << "# monitoring 0 data " << pData->_tCtrl._tTask._fActualPos[0][0]
+         << pData->_tCtrl._tTask._fActualPos[0][1]
+         << pData->_tCtrl._tTask._fActualPos[0][2]
+         << pData->_tCtrl._tTask._fActualPos[0][3]
+         << pData->_tCtrl._tTask._fActualPos[0][4]
+         << pData->_tCtrl._tTask._fActualPos[0][5] << endl;
+}
+
+void
+callback::on_monitoring_data_exchange(const LPMONITORING_DATA_EX pData) {
+    return;
+    cout << "# monitoring 1 data " << pData->_tCtrl._tWorld._fTargetPos[0]
+         << pData->_tCtrl._tWorld._fTargetPos[1] << pData->_tCtrl._tWorld._fTargetPos[2]
+         << pData->_tCtrl._tWorld._fTargetPos[3] << pData->_tCtrl._tWorld._fTargetPos[4]
+         << pData->_tCtrl._tWorld._fTargetPos[5] << endl;
+}
+
+void
+callback::on_monitoring_ctrl_io(const LPMONITORING_CTRLIO pData) {
+    return;
+    cout << "# monitoring ctrl 0 data" << endl;
+    for (int i = 0; i < 16; i++) { cout << (int)pData->_tInput._iActualDI[i] << endl; }
+}
+
+void
+callback::on_monitoring_ctrl_io_exchange(const LPMONITORING_CTRLIO_EX pData) {
+    return;
+    cout << "# monitoring ctrl 1 data" << endl;
+    for (int i = 0; i < 16; i++) { cout << (int)pData->_tInput._iActualDI[i] << endl; }
+    for (int i = 0; i < 16; i++) { cout << (int)pData->_tOutput._iTargetDO[i] << endl; }
+}
+
+void
+callback::on_log_alarm(LPLOG_ALARM tLog) {
+    cout << "Alarm Info: "
+         << "group(" << (unsigned int)tLog->_iGroup << "), index(" << tLog->_iIndex
+         << "), param(" << tLog->_szParam[0] << "), param(" << tLog->_szParam[1]
+         << "), param(" << tLog->_szParam[2] << ")" << endl;
+}
+
+void
+callback::on_program_stopped(const PROGRAM_STOP_CAUSE cause) {
+    cout << "Program stopped (cause " << cause << ")" << endl;
+}
+
+void
+callback::on_tp_initialising_completed() {
+    tp_initialisation_completed = true;
+    drfl.ManageAccessControl(MANAGE_ACCESS_CONTROL_FORCE_REQUEST);
+}
+
+void
+callback::on_monitoring_state(const ROBOT_STATE state) {
+    switch ((unsigned char)state) {
+        case STATE_EMERGENCY_STOP:
+            // popup
+            break;
+        case STATE_STANDBY:
+        case STATE_MOVING:
+        case STATE_TEACHING:
+            break;
+        case STATE_SAFE_STOP:
+            if (has_control_authority) {
+                drfl.SetSafeStopResetType(SAFE_STOP_RESET_TYPE_DEFAULT);
+                drfl.SetRobotControl(CONTROL_RESET_SAFET_STOP);
+            }
+            break;
+        case STATE_SAFE_OFF:
+            cout << "State STATE_SAFE_OFF\n";
+            if (has_control_authority) { drfl.SetRobotControl(CONTROL_SERVO_ON); }
+            break;
+        case STATE_SAFE_STOP2:
+            cout << "State STATE_SAFE_STOP2\n";
+            if (has_control_authority) {
+                drfl.SetRobotControl(CONTROL_RECOVERY_SAFE_STOP);
+            }
+            break;
+        case STATE_SAFE_OFF2:
+            cout << "State STATE_SAFE_OFF2\n";
+            if (has_control_authority) {
+                drfl.SetRobotControl(CONTROL_RECOVERY_SAFE_OFF);
+            }
+            break;
+        case STATE_RECOVERY:
+            // Drfl.SetRobotControl(CONTROL_RESET_RECOVERY);
+            break;
+        default:
+            break;
+    }
+    return;
+}
+
+void
+callback::on_monitoring_access_control(const MONITORING_ACCESS_CONTROL control) {
+    switch (control) {
+        case MONITORING_ACCESS_CONTROL_REQUEST:
+            assert(drfl.ManageAccessControl(MANAGE_ACCESS_CONTROL_RESPONSE_NO));
+            // Drfl.ManageAccessControl(MANAGE_ACCESS_CONTROL_RESPONSE_YES);
+            break;
+        case MONITORING_ACCESS_CONTROL_GRANT:
+            cout << "Access control grant" << endl;
+            has_control_authority = TRUE;
+            callback::on_monitoring_state(drfl.GetRobotState());
+            break;
+        case MONITORING_ACCESS_CONTROL_DENY:
+        case MONITORING_ACCESS_CONTROL_LOSS:
+            cout << "Access control revoked" << endl;
+            has_control_authority = FALSE;
+            if (tp_initialisation_completed) {
+                drfl.ManageAccessControl(MANAGE_ACCESS_CONTROL_FORCE_REQUEST);
+            }
+            break;
+        default:
+            break;
+    }
 }
 
 #include "pluginlib/class_list_macros.hpp"
