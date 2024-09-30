@@ -21,18 +21,12 @@ set(HW_IF_INCLUDE_DEPENDS
 )
 # find dependencies
 find_package(ament_cmake REQUIRED)
+find_package(Eigen3 REQUIRED)
 foreach(Dependency IN ITEMS ${HW_IF_INCLUDE_DEPENDS})
   find_package(${Dependency} REQUIRED)
 endforeach()
 
-SET( SRC_FILES
-  src/dsr_hw_interface2.cpp
-)
-
-LINK_LIBRARIES(DRFL PocoFoundation PocoNet)
-
 if($ENV{ROS_DISTRO} STREQUAL "humble")                          
-  LINK_DIRECTORIES ("${COMMON_LIB_FILES}/$ENV{ROS_DISTRO}/x86_64")
 else()
     message(FATAL_ERROR "Unknown ROS distro: $ENV{ROS_DISTRO}")
 endif()
@@ -49,7 +43,7 @@ target_include_directories(dsr_hardware2 PUBLIC
   $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include/dsr_hardware2>
 )
-target_link_libraries(dsr_hardware2 yaml-cpp doosan::drflapi)
+target_link_libraries(dsr_hardware2 yaml-cpp doosan::drflapi Eigen3::Eigen)
 ament_target_dependencies(
   dsr_hardware2 
   ${HW_IF_INCLUDE_DEPENDS}

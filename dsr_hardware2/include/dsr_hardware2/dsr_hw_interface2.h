@@ -35,12 +35,15 @@
  *  ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
  *  POSSIBILITY OF SUCH DAMAGE.
  *********************************************************************/
+#include <rclcpp/logger.hpp>
 #define _DEBUG_DSR_CTL 1
 
 #define USE_FULL_LIB
 
 #ifndef DSR_HARDWARE2__DR_HW_INTERFACE2_H
 #define DSR_HARDWARE2__DR_HW_INTERFACE2_H
+
+#include <Eigen/Dense>
 
 #include "hardware_interface/handle.hpp"
 #include "hardware_interface/hardware_info.hpp"
@@ -77,12 +80,24 @@ public:
             override;
 
 protected:
+    rclcpp::Logger
+    get_logger() const {
+        return rclcpp::get_logger("dsr_hw_interface2");
+    }
+
     enum ControlMode {
         UNKNOWN = 0,
         POSITION,
         VELOCITY,
         TORQUE
     } control_mode_;
+
+    Eigen::Vector<double, 6> _q_state;
+    Eigen::Vector<double, 6> _q_dot_state;
+    Eigen::Vector<double, 6> _tau_state;
+    Eigen::Vector<double, 6> _q_cmd;
+    Eigen::Vector<double, 6> _q_dot_cmd;
+    Eigen::Vector<double, 6> _tau_cmd;
 
     const std::vector<std::string> joint_names = {
             "joint_1", "joint_2", "joint_3", "joint_4", "joint_5", "joint_6"};
