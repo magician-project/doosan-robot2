@@ -86,14 +86,14 @@ protected:
     }
 
     enum ControlMode {
-        UNKNOWN = 0,
+        NOT_SET = 0,
         POSITION,
         VELOCITY,
         TORQUE
-    } control_mode_;
+    } _control_mode;
 
     using Vec6double = Eigen::Vector<double, 6>;
-    using Vec6float = Eigen::Vector<float, 6>;
+    using Vec6float  = Eigen::Vector<float, 6>;
 
     Vec6double _q_state;
     Vec6double _q_dot_state;
@@ -104,6 +104,7 @@ protected:
 
     Vec6float _q_dot_limit;
     Vec6float _q_dot_dot_limit;
+    Vec6float _tau_grav;
 
     const std::vector<std::string> joint_names = {
             "joint_1", "joint_2", "joint_3", "joint_4", "joint_5", "joint_6"};

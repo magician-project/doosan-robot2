@@ -6,9 +6,13 @@
 //  * Use of this source code is governed by the BSD, see LICENSE
 // */
 
+
+// TODOS:
+// Disconnection procedure
 #include "dsr_hardware2/dsr_hw_interface2.h"
 
 #include <chrono>
+#include <cmath>
 #include <DRFC.h>
 #include <thread>
 
@@ -33,6 +37,18 @@ bool                  tp_initialisation_completed = FALSE;
 const std::string  host_ip       = "192.168.127.100";
 const unsigned int host_tcp_port = 12345;
 const unsigned int host_udp_port = 12347;
+
+constexpr float None = -10000;
+
+// Conversion functions
+auto double_to_float = [](const double& data) -> float {
+    return static_cast<float>(data);
+};
+
+auto float_to_double = [](const float& data) -> double {
+    return static_cast<double>(data);
+};
+
 CallbackReturn
 DRHWInterface::on_init(const hardware_interface::HardwareInfo& info) {
     if (hardware_interface::SystemInterface::on_init(info) != CallbackReturn::SUCCESS) {
@@ -41,6 +57,8 @@ DRHWInterface::on_init(const hardware_interface::HardwareInfo& info) {
     }
 
     // Initiliase member variables
+    _control_mode = NOT_SET;
+
     _q_state     = Vec6double::Zero();
     _q_dot_state = Vec6double::Zero();
     _tau_state   = Vec6double::Zero();
@@ -48,8 +66,10 @@ DRHWInterface::on_init(const hardware_interface::HardwareInfo& info) {
     _q_dot_cmd   = Vec6double::Zero();
     _tau_cmd     = Vec6double::Zero();
 
+
     _q_dot_limit     = 70 * Vec6float::Ones();
     _q_dot_dot_limit = 70 * Vec6float::Ones();
+    _tau_grav        = Vec6float::Zero();
 
 
     // TODO: register callback here
@@ -204,18 +224,99 @@ DRHWInterface::export_command_interfaces() {
 hardware_interface::return_type
 DRHWInterface::perform_command_mode_switch(
         const std::vector<std::string>& start_interfaces,
-        const std::vector<std::string>& stop_interfaces
+        const std::vector<std::string>& /* stop_interfaces */
 ) {
+    RCLCPP_DEBUG(get_logger(), "Called command mode switch");
+    if (start_interfaces.empty()) {
+        RCLCPP_DEBUG(get_logger(), "No control mode specified, leaving unchanged!");
+        return return_type::OK;
+    }
+
+    const std::string req_cmd_interface = start_interfaces[0];
+    const std::string mode = req_cmd_interface.substr(req_cmd_interface.find('/') + 1);
+
+    if (mode == hardware_interface::HW_IF_POSITION) {
+        RCLCPP_INFO(get_logger(), "Switching to position control");
+        _control_mode = POSITION;
+    } else if (mode == hardware_interface::HW_IF_VELOCITY) {
+        RCLCPP_INFO(get_logger(), "Switching to velocity control");
+        _control_mode = VELOCITY;
+    } else if (mode == hardware_interface::HW_IF_EFFORT) {
+        RCLCPP_INFO(get_logger(), "Switching to torque control");
+        _control_mode = TORQUE;
+    } else {
+        RCLCPP_ERROR(get_logger(), "Unknown control mode '%s'", mode.data());
+        return hardware_interface::return_type::ERROR;
+    }
+
     return return_type::OK;
 }
 
 return_type
 DRHWInterface::read(const rclcpp::Time& time, const rclcpp::Duration& period) {
+    auto deg_to_rad = [](const float& data) -> double { return data * M_PI / 180.0; };
+
+    const LPRT_OUTPUT_DATA_LIST data = drfl.read_data_rt();
+    // Joint position
+    std::transform(
+            data->actual_joint_position,
+            data->actual_joint_position + 6,
+            _q_state.begin(),
+            deg_to_rad
+    );
+    // Joint velocity
+    std::transform(
+            data->actual_joint_velocity,
+            data->actual_joint_velocity + 6,
+            _q_dot_state.begin(),
+            deg_to_rad
+    );
+    // Joint torque
+    std::transform(
+            data->external_joint_torque,
+            data->external_joint_torque + 6,
+            _tau_state.begin(),
+            float_to_double
+    );
+
+    // Gravity compensation torque
+    std::transform(
+            data->gravity_torque,
+            data->gravity_torque + 6,
+            _tau_grav.begin(),
+            float_to_double
+    );
     return return_type::OK;
 }
 
 return_type
 DRHWInterface::write(const rclcpp::Time& /*time*/, const rclcpp::Duration& /*period*/) {
+    auto rad_to_deg = [](const double& data) -> float { return data * 180.0 / M_PI; };
+
+    Vec6float cmd;
+    Vec6float empty({None, None, None, None, None, None});
+    switch (_control_mode) {
+        case NOT_SET:
+            break;
+        case POSITION:
+            std::transform(_q_cmd.begin(), _q_cmd.end(), cmd.data(), rad_to_deg);
+            drfl.servoj_rt(cmd.data(), empty.data(), empty.data(), 0.0);
+            break;
+        case VELOCITY:
+            std::transform(
+                    _q_dot_cmd.begin(), _q_dot_cmd.end(), cmd.data(), rad_to_deg
+            );
+            drfl.speedj_rt(cmd.data(), empty.data(), 0.0);
+            break;
+        case TORQUE:
+            // use "empty" as storage for the desired torque w/o gravity compensation
+            std::transform(
+                    _tau_cmd.begin(), _tau_cmd.end(), empty.data(), double_to_float
+            );
+            cmd = _tau_grav + empty;
+            drfl.torque_rt(cmd.data(), 0.0);
+            break;
+    }
     return return_type::OK;
 }
 
