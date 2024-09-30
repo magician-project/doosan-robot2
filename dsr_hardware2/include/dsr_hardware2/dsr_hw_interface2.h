@@ -92,12 +92,18 @@ protected:
         TORQUE
     } control_mode_;
 
-    Eigen::Vector<double, 6> _q_state;
-    Eigen::Vector<double, 6> _q_dot_state;
-    Eigen::Vector<double, 6> _tau_state;
-    Eigen::Vector<double, 6> _q_cmd;
-    Eigen::Vector<double, 6> _q_dot_cmd;
-    Eigen::Vector<double, 6> _tau_cmd;
+    using Vec6double = Eigen::Vector<double, 6>;
+    using Vec6float = Eigen::Vector<float, 6>;
+
+    Vec6double _q_state;
+    Vec6double _q_dot_state;
+    Vec6double _tau_state;
+    Vec6double _q_cmd;
+    Vec6double _q_dot_cmd;
+    Vec6double _tau_cmd;
+
+    Vec6float _q_dot_limit;
+    Vec6float _q_dot_dot_limit;
 
     const std::vector<std::string> joint_names = {
             "joint_1", "joint_2", "joint_3", "joint_4", "joint_5", "joint_6"};
