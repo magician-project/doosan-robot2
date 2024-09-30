@@ -174,6 +174,7 @@ DRHWInterface::on_init(const hardware_interface::HardwareInfo& info) {
         return CallbackReturn::FAILURE;
     }
 
+
     // Real-time communication initialisation and setup
     RCLCPP_INFO(
             get_logger(),
@@ -281,8 +282,20 @@ DRHWInterface::export_command_interfaces() {
 hardware_interface::return_type
 DRHWInterface::perform_command_mode_switch(
         const std::vector<std::string>& start_interfaces,
-        const std::vector<std::string>& /* stop_interfaces */
+        const std::vector<std::string>& stop_interfaces
 ) {
+    const auto parent_ret =
+            hardware_interface::SystemInterface::perform_command_mode_switch(
+                    start_interfaces, stop_interfaces
+            );
+    if (parent_ret != return_type::OK) {
+        RCLCPP_ERROR(
+                get_logger(),
+                "Parent 'perform_command_mode_switch()' function call failed!"
+        );
+        return return_type::ERROR;
+    }
+
     RCLCPP_DEBUG(get_logger(), "Called command mode switch");
     if (start_interfaces.empty()) {
         RCLCPP_DEBUG(get_logger(), "No control mode specified, leaving unchanged!");
