@@ -6,9 +6,6 @@
 //  * Use of this source code is governed by the BSD, see LICENSE
 // */
 
-
-// TODOS:
-// Disconnection procedure
 #include "dsr_hardware2/dsr_hw_interface2.h"
 
 #include <chrono>
@@ -214,6 +211,15 @@ DRHWInterface::on_init(const hardware_interface::HardwareInfo& info) {
     drfl.set_safety_mode(SAFETY_MODE_AUTONOMOUS, SAFETY_MODE_EVENT_MOVE);
 
     RCLCPP_INFO(get_logger(), "DSR hardware interface initialisation completed");
+    return CallbackReturn::SUCCESS;
+}
+
+CallbackReturn
+DRHWInterface::on_shutdown(const rclcpp_lifecycle::State& /* prev_state */) {
+    RCLCPP_INFO(get_logger(), "Disconnecting RT control");
+    if (!drfl.disconnect_rt_control()) return CallbackReturn::ERROR;
+    RCLCPP_INFO(get_logger(), "Disconnecting communication with robot");
+    if (!drfl.close_connection()) return CallbackReturn::ERROR;
     return CallbackReturn::SUCCESS;
 }
 

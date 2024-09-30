@@ -36,6 +36,9 @@
  *  POSSIBILITY OF SUCH DAMAGE.
  *********************************************************************/
 #include <rclcpp/logger.hpp>
+
+#include "controller_interface/controller_interface_base.hpp"
+#include "rclcpp_lifecycle/state.hpp"
 #define _DEBUG_DSR_CTL 1
 
 #define USE_FULL_LIB
@@ -63,6 +66,8 @@ public:
     // ~DRHWInterface();
 
     CallbackReturn on_init(const hardware_interface::HardwareInfo& info) override;
+
+    CallbackReturn on_shutdown(const rclcpp_lifecycle::State& prev_state) override;
 
     std::vector<hardware_interface::StateInterface> export_state_interfaces() override;
 
