@@ -43,11 +43,18 @@ target_include_directories(dsr_hardware2 PUBLIC
   $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include/dsr_hardware2>
 )
-target_link_libraries(dsr_hardware2 yaml-cpp doosan::drflapi Eigen3::Eigen)
 ament_target_dependencies(
   dsr_hardware2 
+  PUBLIC
   ${HW_IF_INCLUDE_DEPENDS}
   # ${CONTROLLER_INCLUDE_DEPENDS}
+)
+target_link_libraries(
+    dsr_hardware2 
+    PUBLIC
+    yaml-cpp 
+    PRIVATE
+    doosan::drflapi Eigen3::Eigen
 )
 
 
