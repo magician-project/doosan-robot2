@@ -149,13 +149,6 @@ def generate_launch_description():
     # )
 
 
-    # Delay rviz start after `joint_state_broadcaster`
-    delay_rviz_after_joint_state_broadcaster_spawner = RegisterEventHandler(
-        event_handler=OnProcessExit(
-            target_action=robot_controller_spawner,
-            on_exit=[rviz_node],
-        )
-    )
 
     # Delay start of robot_controller after `joint_state_broadcaster`
     delay_robot_controller_spawner_after_joint_state_broadcaster_spawner = RegisterEventHandler(
@@ -165,13 +158,41 @@ def generate_launch_description():
         )
     )
 
+    handle_node = Node(
+            package="controller_manager",
+            executable="spawner",
+            arguments=[
+                "motion_control_handle",
+                "-c", "/dsr01/controller_manager",
+                "--activate"
+                ])
+    controller_node = Node(
+            package="controller_manager",
+            executable="spawner",
+            arguments=[
+                "cartesian_impedance_controller",
+                "-c", "/dsr01/controller_manager",
+                "--activate"
+                ])
+
+    # Delay rviz start after `joint_state_broadcaster`
+    delay_rviz_after_joint_state_broadcaster_spawner = RegisterEventHandler(
+        event_handler=OnProcessExit(
+            target_action=joint_state_broadcaster_spawner,
+            on_exit=[rviz_node],
+        )
+    )
+
     nodes = [
         connection_node,
         control_node,
         robot_state_pub_node,
-        robot_controller_spawner,
+        # robot_controller_spawner,
         joint_state_broadcaster_spawner,
+        # rviz_node,
         delay_rviz_after_joint_state_broadcaster_spawner,
+        handle_node,
+        controller_node,
         # delay_robot_controller_spawner_after_joint_state_broadcaster_spawner,
     ]
 

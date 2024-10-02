@@ -65,6 +65,7 @@
   cartesian_impedance_controller:
     ros__parameters:
       end_effector_link: "link_6"
+      ft_sensor_ref_link: "link_6"
       robot_base_link: "base_link"
       joints:
         - joint_1
