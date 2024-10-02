@@ -31,10 +31,12 @@
           <param name="min">-3.15</param>
           <param name="max">3.15</param>
         </command_interface>
+        <command_interface name="effort"/>
         <state_interface name="position">
           <param name="initial_value">0.0</param>
         </state_interface>
         <state_interface name="velocity"/>
+        <state_interface name="effort"/>
       </joint>
 
       <joint name="joint_2">
@@ -46,10 +48,12 @@
           <param name="min">-3.15</param>
           <param name="max">3.15</param>
         </command_interface>
+        <command_interface name="effort"/>
         <state_interface name="position">
           <param name="initial_value">0.0</param>
         </state_interface>
         <state_interface name="velocity"/>
+        <state_interface name="effort"/>
       </joint>
 
       <joint name="joint_3">
@@ -61,10 +65,12 @@
           <param name="min">-3.15</param>
           <param name="max">3.15</param>
         </command_interface>
+        <command_interface name="effort"/>
         <state_interface name="position">
           <param name="initial_value">0.0</param>
         </state_interface>
         <state_interface name="velocity"/>
+        <state_interface name="effort"/>
       </joint>
 
       <joint name="joint_4">
@@ -76,10 +82,12 @@
           <param name="min">-3.2</param>
           <param name="max">3.2</param>
         </command_interface>
+        <command_interface name="effort"/>
         <state_interface name="position">
           <param name="initial_value">0.0</param>
         </state_interface>
         <state_interface name="velocity"/>
+        <state_interface name="effort"/>
       </joint>
 
       <joint name="joint_5">
@@ -91,10 +99,12 @@
           <param name="min">-3.2</param>
           <param name="max">3.2</param>
         </command_interface>
+        <command_interface name="effort"/>
         <state_interface name="position">
           <param name="initial_value">0.0</param>
         </state_interface>
         <state_interface name="velocity"/>
+        <state_interface name="effort"/>
       </joint>
 
       <joint name="joint_6">
@@ -106,10 +116,12 @@
           <param name="min">-3.2</param>
           <param name="max">3.2</param>
         </command_interface>
+        <command_interface name="effort"/>
         <state_interface name="position">
           <param name="initial_value">0.0</param>
         </state_interface>
         <state_interface name="velocity"/>
+        <state_interface name="effort"/>
       </joint>
 
 

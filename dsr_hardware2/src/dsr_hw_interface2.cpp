@@ -1,5 +1,5 @@
 // /*
-//  *  Inferfaces for doosan robot controllor 
+//  *  Inferfaces for doosan robot controllor
 //   * Author: Minsoo Song(minsoo.song@doosan.com)
 //  *
 //  * Copyright (c) 2024 Doosan Robotics
@@ -7,777 +7,552 @@
 // */
 
 #include "dsr_hardware2/dsr_hw_interface2.h"
-#include "ament_index_cpp/get_package_share_directory.hpp"
 
-// #include "dsr_hardware2/dsr_connection_node2.h"
-#include <boost/thread/thread.hpp>
-#include <boost/assign/list_of.hpp>
-#include <boost/bind.hpp>
-#include <sstream>
-#include <string>
-#include <vector>
+#include <chrono>
+#include <cmath>
+#include <iostream>
 #include <thread>
-#include <yaml-cpp/yaml.h>
-#include <fstream>
 
-#include <unistd.h>     
-#include <math.h>
-#include "../../common2/include/DRFLEx.h"
-using namespace DRAFramework;
-rclcpp::Node::SharedPtr s_node_ = nullptr;
-rclcpp::Node::SharedPtr m_node_ = nullptr; //ROS2
-CDRFLEx Drfl;
-//TODO Serial_comm ser_comm;
-sensor_msgs::msg::JointState msg;
-bool g_bIsEmulatorMode = FALSE;
-bool g_bHasControlAuthority = FALSE;
-bool g_bTpInitailizingComplted = FALSE;
-bool g_bHommingCompleted = FALSE;
+#include <hardware_interface/handle.hpp>
+#include <hardware_interface/hardware_info.hpp>
+#include <hardware_interface/types/hardware_interface_type_values.hpp>
+#include <rclcpp/logging.hpp>
 
-ROBOT_JOINT_DATA g_joints[NUM_JOINT];
+#include "DRFC.h"
+#include "DRFLEx.h"
 
-DR_STATE    g_stDrState;
-DR_ERROR    g_stDrError;
+using dsr_hardware2::DRHWInterface;
+using std::cout, std::endl;
 
-int g_nAnalogOutputModeCh1;
-int g_nAnalogOutputModeCh2;
-int m_nVersionDRCF;
+using CallbackReturn = dsr_hardware2::DRHWInterface::CallbackReturn;
+using return_type    = dsr_hardware2::DRHWInterface::return_type;
 
+// Global variables
+DRAFramework::CDRFLEx drfl;
+bool                  has_control_authority       = false;
+bool                  tp_initialisation_completed = false;
 
-int nDelay = 5000;
-#define STABLE_BAND_JNT     0.05
-#define DSR_CTL_PUB_RATE    100  //[hz] 10ms <----- 퍼블리싱 주기, but OnMonitoringDataCB() 은 100ms 마다 불려짐을 유의!   
-void* get_drfl(){
-    RCLCPP_INFO(rclcpp::get_logger("dsr_hw_interface2"),"[DRFL address] %p", &Drfl);
-    return &Drfl;
-}
-void* get_s_node_(){
-    return &s_node_;
-}
+// Configuration variables
+const std::string  host_ip       = "192.168.127.100";
+const unsigned int host_tcp_port = 12345;
+const unsigned int host_udp_port = 12347;
 
-bool init_check = true;
+constexpr float None = -10000;
 
-void threadFunction() {
-    s_node_ = rclcpp::Node::make_shared("dsr_hw_interface2");
-    
-    std::string param_name = std::string(s_node_->get_namespace()) + "_parameters.yaml";
-    std::string package_directory = ament_index_cpp::get_package_share_directory("dsr_hardware2");
-    std::string yaml_file_path = package_directory + "/config" + param_name;
+// Callback functions declaration
+namespace callback {
+// Callbacks that do not modify the global state
+void on_tp_popup(LPMESSAGE_POPUP popup);
+void on_tp_log(const char* strLog);
+void on_tp_progress(LPMESSAGE_PROGRESS progress);
+void on_tp_get_user_input(LPMESSAGE_INPUT input);
+void on_homing_completed();
+void on_monitoring_data(const LPMONITORING_DATA pData);
+void on_monitoring_data_exchange(const LPMONITORING_DATA_EX pData);
+void on_monitoring_ctrl_io(const LPMONITORING_CTRLIO pData);
+void on_monitoring_ctrl_io_exchange(const LPMONITORING_CTRLIO_EX pData);
+void on_log_alarm(LPLOG_ALARM tLog);
+void on_program_stopped(const PROGRAM_STOP_CAUSE);
 
-    std::ifstream fin(yaml_file_path);
-    if (!fin) {
-        RCLCPP_ERROR(s_node_->get_logger(), "Failed to open YAML file: %s", yaml_file_path.c_str());
-        return;
-    }
+// Callbacks that can modify the global state
+void on_tp_initialising_completed();
+void on_monitoring_state(const ROBOT_STATE);
+void on_monitoring_access_control(const MONITORING_ACCESS_CONTROL control);
+}  // namespace callback
 
-    // YAML 파일 파싱
-    YAML::Node yaml_node = YAML::Load(fin);
-    fin.close();
-    
-    // 파싱된 YAML 노드에서 파라미터 읽기
-    if (yaml_node["name"]) {
-        m_name = yaml_node["name"].as<std::string>();
-        RCLCPP_INFO(s_node_->get_logger(), "name: %s", m_name.c_str());
-    }
-    if (yaml_node["rate"]) {
-        m_rate = yaml_node["rate"].as<int>();
-        RCLCPP_INFO(s_node_->get_logger(), "rate: %d", m_rate);
-    }
-    if (yaml_node["standby"]) {
-        m_standby = yaml_node["standby"].as<int>();
-        RCLCPP_INFO(s_node_->get_logger(), "standby: %d", m_standby);
-    }
-    if (yaml_node["command"]) {
-        m_command = yaml_node["command"].as<bool>();
-        RCLCPP_INFO(s_node_->get_logger(), "command: %s", m_command ? "true" : "false");
-    }
-    if (yaml_node["host"]) {
-        m_host = yaml_node["host"].as<std::string>();
-        RCLCPP_INFO(s_node_->get_logger(), "host: %s", m_host.c_str());
-    }
-    if (yaml_node["port"]) {
-        m_port = yaml_node["port"].as<int>();
-        RCLCPP_INFO(s_node_->get_logger(), "port: %d", m_port);
-    }
-    if (yaml_node["mode"]) {
-        m_mode = yaml_node["mode"].as<std::string>();
-        RCLCPP_INFO(s_node_->get_logger(), "mode: %s", m_mode.c_str());
-    }
-    if (yaml_node["model"]) {
-        m_model = yaml_node["model"].as<std::string>();
-        RCLCPP_INFO(s_node_->get_logger(), "model: %s", m_model.c_str());
-    }
-    if (yaml_node["gripper"]) {
-        m_gripper = yaml_node["gripper"].as<std::string>();
-        RCLCPP_INFO(s_node_->get_logger(), "gripper: %s", m_gripper.c_str());
-    }
-    if (yaml_node["mobile"]) {
-        m_mobile = yaml_node["mobile"].as<std::string>();
-        RCLCPP_INFO(s_node_->get_logger(), "mobile: %s", m_mobile.c_str());
-    }
-}
+/* NOTE
+ * The only callback missing is the one for RT data stream input.
+ */
 
+// Conversion functions
+auto double_to_float = [](const double& data) -> float {
+    return static_cast<float>(data);
+};
 
-namespace dsr_hardware2{
+auto float_to_double = [](const float& data) -> double {
+    return static_cast<double>(data);
+};
 
+//  _   _               _
+// | | | | __ _ _ __ __| |_      ____ _ _ __ ___
+// | |_| |/ _` | '__/ _` \ \ /\ / / _` | '__/ _ \
+// |  _  | (_| | | | (_| |\ V  V / (_| | | |  __/
+// |_| |_|\__,_|_|  \__,_| \_/\_/ \__,_|_|  \___|
+//
+//  ___       _             __
+// |_ _|_ __ | |_ ___ _ __ / _| __ _  ___ ___
+//  | || '_ \| __/ _ \ '__| |_ / _` |/ __/ _ \
+//  | || | | | ||  __/ |  |  _| (_| | (_|  __/
+// |___|_| |_|\__\___|_|  |_|  \__,_|\___\___|
+//
 
-CallbackReturn DRHWInterface::on_init(const hardware_interface::HardwareInfo & info)
-{
-    if (hardware_interface::SystemInterface::on_init(info) != CallbackReturn::SUCCESS)
-    {
+CallbackReturn
+DRHWInterface::on_init(const hardware_interface::HardwareInfo& info) {
+    if (hardware_interface::SystemInterface::on_init(info) != CallbackReturn::SUCCESS) {
+        RCLCPP_ERROR(get_logger(), "Parent 'on_init()' function call failed!");
         return CallbackReturn::ERROR;
     }
-    sleep(8);
 
-    // robot has 6 joints and 2 interfaces
-    joint_position_.assign(6, 0);
-    joint_velocities_.assign(6, 0);
-    joint_position_command_.assign(6, 0);
-    joint_velocities_command_.assign(6, 0);
+    // Initiliase member variables
+    _control_mode = NOT_SET;
 
-    for (const auto & joint : info_.joints)
-    {
-        for (const auto & interface : joint.state_interfaces)
-        {
-        joint_interfaces[interface.name].push_back(joint.name);
-        }
+    _q_state     = Vec6double::Zero();
+    _q_dot_state = Vec6double::Zero();
+    _tau_state   = Vec6double::Zero();
+    _q_cmd       = Vec6double::Zero();
+    _q_dot_cmd   = Vec6double::Zero();
+    _tau_cmd     = Vec6double::Zero();
+
+    _q_dot_limit     = 70 * Vec6float::Ones();
+    _q_dot_dot_limit = 70 * Vec6float::Ones();
+    _tau_grav        = Vec6float::Zero();
+
+
+    // Register callbacks (non-modifying)
+    drfl.set_on_homming_completed(callback::on_homing_completed);
+    drfl.set_on_monitoring_data(callback::on_monitoring_data);
+    drfl.set_on_monitoring_data_ex(callback::on_monitoring_data_exchange);
+    drfl.set_on_monitoring_ctrl_io(callback::on_monitoring_ctrl_io);
+    drfl.set_on_monitoring_ctrl_io_ex(callback::on_monitoring_ctrl_io_exchange);
+    drfl.set_on_log_alarm(callback::on_log_alarm);
+    drfl.set_on_tp_popup(callback::on_tp_popup);
+    drfl.set_on_tp_log(callback::on_tp_log);
+    drfl.set_on_tp_progress(callback::on_tp_progress);
+    drfl.set_on_tp_get_user_input(callback::on_tp_get_user_input);
+    drfl.set_on_program_stopped(callback::on_program_stopped);
+
+    // Register callbacks (the following CAN modify the global state)
+    drfl.set_on_monitoring_state(callback::on_monitoring_state);
+    drfl.set_on_monitoring_access_control(callback::on_monitoring_access_control);
+    drfl.set_on_tp_initializing_completed(callback::on_tp_initialising_completed);
+
+
+    // Communication initialisation and robot setup
+    RCLCPP_INFO(
+            get_logger(),
+            "Connecting to robot on IP %s:%u",
+            host_ip.c_str(),
+            host_tcp_port
+    );
+    if (!drfl.open_connection(host_ip, host_tcp_port)) {
+        RCLCPP_ERROR(get_logger(), "Unable to establish connection with robot");
+        return CallbackReturn::ERROR;
     }
-    
-    auto joint_names = {
-        "joint_1",
-        "joint_2",
-        "joint_3",
-        "joint_4",
-        "joint_5",
-        "joint_6",
+    RCLCPP_INFO(get_logger(), "Connected!");
+
+    SYSTEM_VERSION sys_version = {
+            '\0',
     };
+    if (!drfl.get_system_version(&sys_version)) return CallbackReturn::ERROR;
+    if (!drfl.setup_monitoring_version(1)) return CallbackReturn::ERROR;
+    drfl.set_robot_control(CONTROL_SERVO_ON);
+    drfl.set_digital_output(GPIO_CTRLBOX_DIGITAL_INDEX_10, TRUE);
+    RCLCPP_INFO(get_logger(), "System version: %s", sys_version._szController);
+    RCLCPP_INFO(get_logger(), "Libray version: %s", drfl.get_library_version());
 
-    size_t i = 0;
-    for (auto & joint_name : joint_names)
-    {
-        // RCLCPP_INFO(rclcpp::get_logger("dsr_hw_interface2"),"joint_name = %s", joint_name);
-        ++i;
-    }
-    std::thread t(threadFunction);
-    t.join(); // need to make sure termination of the thread.
-
-//-----------------------------------------------------------------------------------------------------
-    
-
-    RCLCPP_INFO(rclcpp::get_logger("dsr_hw_interface2"),"_______________________________________________\n"); 
-    RCLCPP_INFO(rclcpp::get_logger("dsr_hw_interface2"),"    INITAILIZE");
-    RCLCPP_INFO(rclcpp::get_logger("dsr_hw_interface2"),"_______________________________________________\n"); 
-    //--- doosan API's call-back fuctions : Only work within 50msec in call-back functions
-    Drfl.set_on_tp_initializing_completed(DSRInterface::OnTpInitializingCompletedCB);
-    Drfl.set_on_homming_completed(DSRInterface::OnHommingCompletedCB);
-    Drfl.set_on_program_stopped(DSRInterface::OnProgramStoppedCB);
-    Drfl.set_on_monitoring_modbus(DSRInterface::OnMonitoringModbusCB);
-    Drfl.set_on_monitoring_data(DSRInterface::OnMonitoringDataCB);           // Callback function in M2.4 and earlier
-    Drfl.set_on_monitoring_ctrl_io(DSRInterface::OnMonitoringCtrlIOCB);       // Callback function in M2.4 and earlier
-    Drfl.set_on_monitoring_state(DSRInterface::OnMonitoringStateCB);
-    Drfl.set_on_monitoring_access_control(DSRInterface::OnMonitoringAccessControlCB);
-    Drfl.set_on_log_alarm(DSRInterface::OnLogAlarm);
-    
-    m_node_ = rclcpp::Node::make_shared("dsr_hw_interface_update");
-    auto qos = rclcpp::QoS(rclcpp::QoSInitialization::from_rmw(rmw_qos_profile_default));
-    m_joint_state_pub_ = m_node_->create_publisher<sensor_msgs::msg::JointState>("joint_states", qos);
-    //------------------------------------------------------------------------------
-    // await for values from ros parameters
-    while(m_host == "")
-    {
-        usleep(nDelay);
-    }
-    if(Drfl.open_connection(m_host, m_port))
-    {
-        RCLCPP_INFO(rclcpp::get_logger("dsr_hw_interface2"),"_______________________________________________\n"); 
-        RCLCPP_INFO(rclcpp::get_logger("dsr_hw_interface2"),"    OPEN CONNECTION");
-        RCLCPP_INFO(rclcpp::get_logger("dsr_hw_interface2"),"_______________________________________________\n");   
-
-        //--- connect Emulator ? ------------------------------    
-        if(m_host == "127.0.0.1") g_bIsEmulatorMode = true; 
-        else                    g_bIsEmulatorMode = false;
-
-        //--- Get version -------------------------------------            
-        SYSTEM_VERSION tSysVerion = {'\0', };
-        assert(Drfl.get_system_version(&tSysVerion));
-
-        //--- Get DRCF version & convert to integer  ----------            
-        m_nVersionDRCF = 0; 
-        int k=0;
-        for(int i=strlen(tSysVerion._szController); i>0; i--)
-            if(tSysVerion._szController[i]>='0' && tSysVerion._szController[i]<='9')
-                m_nVersionDRCF += (tSysVerion._szController[i]-'0')*pow(10.0,k++);
-        if(m_nVersionDRCF < 100000) m_nVersionDRCF += 100000; 
-
-        if(g_bIsEmulatorMode) RCLCPP_INFO(rclcpp::get_logger("dsr_hw_interface2"),"    Emulator Mode");
-        else                  RCLCPP_INFO(rclcpp::get_logger("dsr_hw_interface2"),"    Real Robot Mode");
-        RCLCPP_INFO(rclcpp::get_logger("dsr_hw_interface2"),"    DRCF version = %s",tSysVerion._szController);
-        RCLCPP_INFO(rclcpp::get_logger("dsr_hw_interface2"),"    DRFL version = %s",Drfl.get_library_version());
-        RCLCPP_INFO(rclcpp::get_logger("dsr_hw_interface2"),"    m_nVersionDRCF = %d", m_nVersionDRCF);  //ex> M2.40 = 120400, M2.50 = 120500  
-        RCLCPP_INFO(rclcpp::get_logger("dsr_hw_interface2"),"_______________________________________________\n");   
-
-        if(m_nVersionDRCF >= 120500)    //M2.5 or later        
-        {
-            Drfl.set_on_monitoring_data_ex(DSRInterface::OnMonitoringDataExCB);      //Callback function in version 2.5 and higher
-            Drfl.set_on_monitoring_ctrl_io_ex(DSRInterface::OnMonitoringCtrlIOExCB);  //Callback function in version 2.5 and higher                     
-            Drfl.setup_monitoring_version(1);                        //Enabling extended monitoring functions 
-        }
-
-        //--- Check Robot State : STATE_STANDBY ---               
-        while ((Drfl.GetRobotState() != STATE_STANDBY)){
-            usleep(nDelay);
-        }
-
-        //--- Set Robot mode : MANUAL or AUTO
-        assert(Drfl.SetRobotMode(ROBOT_MODE_AUTONOMOUS));
-
-        //--- Set Robot mode : virual or real 
-        ROBOT_SYSTEM eTargetSystem = ROBOT_SYSTEM_VIRTUAL;
-        if(m_mode == "real") eTargetSystem = ROBOT_SYSTEM_REAL;
-        assert(Drfl.SetRobotSystem(eTargetSystem));
-
-        // to compare with g_joints[].cmd
-        for(int i = 0; i < NUM_JOINT; i++){
-            RCLCPP_INFO(rclcpp::get_logger("dsr_hw_interface2"),"    [init]::read %d-pos: %7.3f", i, g_joints[i].cmd);
-            m_fCmd_[i] = g_joints[i].cmd;
-        }
-
-        return CallbackReturn::SUCCESS;
-    }
-    RCLCPP_ERROR(rclcpp::get_logger("dsr_hw_interface2"),"    DSRInterface::init() DRCF connecting ERROR!!!");
-
-  return CallbackReturn::ERROR;
-// return CallbackReturn::SUCCESS;
-}
-
-std::vector<hardware_interface::StateInterface> DRHWInterface::export_state_interfaces()
-{
-  std::vector<hardware_interface::StateInterface> state_interfaces;
-
-  int ind = 0;
-  for (const auto & joint_name : joint_interfaces["position"])
-  {
-    cout << "[callback StateInterface] StateInterface state_interfaces: " << joint_position_[ind] << endl;
-
-    state_interfaces.emplace_back(joint_name, "position", &joint_position_[ind++]);
-  }
-
-  ind = 0;
-  for (const auto & joint_name : joint_interfaces["velocity"])
-  {
-    state_interfaces.emplace_back(joint_name, "velocity", &joint_velocities_[ind++]);
-  }
-
-  return state_interfaces;
-}
-
-std::vector<hardware_interface::CommandInterface> DRHWInterface::export_command_interfaces()
-{
-  std::vector<hardware_interface::CommandInterface> command_interfaces;
-
-  int ind = 0;
-  for (const auto & joint_name : joint_interfaces["position"])
-  {
-    cout << "[callback CommandInterface] CommandInterface joint_position_command_: " << joint_position_command_[ind] << endl;
-    command_interfaces.emplace_back(joint_name, "position", &joint_position_command_[ind++]);
-  }
-
-  ind = 0;
-  for (const auto & joint_name : joint_interfaces["velocity"])
-  {
-    command_interfaces.emplace_back(joint_name, "velocity", &joint_velocities_command_[ind++]);
-  }
-
-  return command_interfaces;
-}
-
-
-return_type DRHWInterface::read(const rclcpp::Time & /*time*/, const rclcpp::Duration & period)
-{
-    double now_sec = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
-    long int now_ns;
-    struct timespec spec;
-    clock_gettime(CLOCK_REALTIME, &spec);
-    now_ns = spec.tv_nsec;
-    msg.header.stamp.sec = (long)now_sec;
-    msg.header.stamp.nanosec = now_ns;
-
-    msg.name.push_back("joint_1");
-    msg.name.push_back("joint_2");
-    msg.name.push_back("joint_3");
-    msg.name.push_back("joint_4");
-    msg.name.push_back("joint_5");
-    msg.name.push_back("joint_6");
-    LPROBOT_POSE pose = Drfl.GetCurrentPose();
-    // for (int i = 0; i < 6; i++){
-    //     RCLCPP_INFO(rclcpp::get_logger("dsr_hw_interface2"), " : %.2f", pose->_fPosition[i]);
-    // }
-    for (auto i = 0ul; i < joint_velocities_command_.size(); i++)
-    {
-        joint_velocities_[i] = joint_velocities_command_[i];
-        joint_position_[i] += joint_velocities_command_[i] * period.seconds();
-    }
-    for (auto i = 0ul; i < joint_position_command_.size(); i++)
-    {
-        joint_position_[i] = joint_position_command_[i];
-        
-        g_joints[i].pos = deg2rad(pose->_fPosition[i]);
-        msg.position.push_back(g_joints[i].pos);
-        msg.velocity.push_back(0);
-        msg.effort.push_back(0);
-    }
-    m_joint_state_pub_->publish(msg);
-    msg.position.clear();
-    msg.velocity.clear();
-    msg.effort.clear();
-    msg.name.clear();
-  return return_type::OK;
-}
-
-return_type DRHWInterface::write(const rclcpp::Time &, const rclcpp::Duration &)
-{
-  return return_type::OK;
-}
-
-DRHWInterface::~DRHWInterface()
-{
-    Drfl.close_connection();
-
-    RCLCPP_INFO(rclcpp::get_logger("dsr_hw_interface2"),"_______________________________________________\n"); 
-    RCLCPP_INFO(rclcpp::get_logger("dsr_hw_interface2"),"    CONNECTION IS CLOSED");
-    RCLCPP_INFO(rclcpp::get_logger("dsr_hw_interface2"),"_______________________________________________\n"); 
-}
-
-}  
-
-
-const char* GetRobotStateString(int nState)
-{
-    switch(nState)
-    {
-    case STATE_INITIALIZING:    return "(0) INITIALIZING";
-    case STATE_STANDBY:         return "(1) STANDBY";
-    case STATE_MOVING:          return "(2) MOVING";
-    case STATE_SAFE_OFF:        return "(3) SAFE_OFF";
-    case STATE_TEACHING:        return "(4) TEACHING";
-    case STATE_SAFE_STOP:       return "(5) SAFE_STOP";
-    case STATE_EMERGENCY_STOP:  return "(6) EMERGENCY_STOP";
-    case STATE_HOMMING:         return "(7) HOMMING";
-    case STATE_RECOVERY:        return "(8) RECOVERY";
-    case STATE_SAFE_STOP2:      return "(9) SAFE_STOP2";
-    case STATE_SAFE_OFF2:       return "(10) SAFE_OFF2";
-    case STATE_RESERVED1:       return "(11) RESERVED1";
-    case STATE_RESERVED2:       return "(12) RESERVED2";
-    case STATE_RESERVED3:       return "(13) RESERVED3";
-    case STATE_RESERVED4:       return "(14) RESERVED4";
-    case STATE_NOT_READY:       return "(15) NOT_READY";
-
-    default:                  return "UNKNOWN";
-    }
-    return "UNKNOWN";
-}
-
-int IsInposition(double dCurPosDeg[], double dCmdPosDeg[])
-{
-    int cnt=0;
-    double dError[NUM_JOINT] ={0.0, };
-
-    for(int i=0;i<NUM_JOINT;i++)
-    {
-        dError[i] = dCurPosDeg[i] - dCmdPosDeg[i];
-        RCLCPP_INFO(rclcpp::get_logger("dsr_hw_interface2"),"    <inpos> %f = %f -%f",dError[i], dCurPosDeg[i], dCmdPosDeg[i]);
-        if(fabs(dError[i]) < STABLE_BAND_JNT)
-            cnt++;
-    }
-    if(NUM_JOINT == cnt)
-        return true;
-    else 
-        return false;
-}
-
-//----- register the call-back functions ----------------------------------------
-void DSRInterface::OnTpInitializingCompletedCB()
-{
-    // request control authority after TP initialized
-    cout << "[callback OnTpInitializingCompletedCB] tp initializing completed" << endl;
-    g_bTpInitailizingComplted = TRUE;
-    //Drfl.manage_access_control(MANAGE_ACCESS_CONTROL_REQUEST);
-    Drfl.manage_access_control(MANAGE_ACCESS_CONTROL_FORCE_REQUEST);
-
-    g_stDrState.bTpInitialized = TRUE;
-}
-
-
-void DSRInterface::OnHommingCompletedCB()
-{
-    g_bHommingCompleted = TRUE;
-    // Only work within 50msec
-    cout << "[callback OnHommingCompletedCB] homming completed" << endl;
-
-    g_stDrState.bHommingCompleted = TRUE;
-}
-
-void DSRInterface::OnProgramStoppedCB(const PROGRAM_STOP_CAUSE iStopCause)
-{
-    cout << "[callback OnProgramStoppedCB] Program Stop: " << (int)iStopCause << endl;
-    g_stDrState.bDrlStopped = TRUE;
-}
-// M2.4 or lower
-void DSRInterface::OnMonitoringCtrlIOCB (const LPMONITORING_CTRLIO pCtrlIO)
-{
-    for (int i = 0; i < NUM_DIGITAL; i++){
-        if(pCtrlIO){  
-            g_stDrState.bCtrlBoxDigitalOutput[i] = pCtrlIO->_tOutput._iTargetDO[i];  
-            g_stDrState.bCtrlBoxDigitalInput[i]  = pCtrlIO->_tInput._iActualDI[i];  
-        }
-    }
-}
-// M2.5 or higher
-void DSRInterface::OnMonitoringCtrlIOExCB (const LPMONITORING_CTRLIO_EX pCtrlIO) 
-{
-    //RCLCPP_INFO(rclcpp::get_logger("dsr_hw_interface2"),"DSRInterface::OnMonitoringCtrlIOExCB");
-
-    for (int i = 0; i < NUM_DIGITAL; i++){
-        if(pCtrlIO){  
-            g_stDrState.bCtrlBoxDigitalOutput[i] = pCtrlIO->_tOutput._iTargetDO[i];  
-            g_stDrState.bCtrlBoxDigitalInput[i]  = pCtrlIO->_tInput._iActualDI[i];  
-        }
+    while ((drfl.get_robot_state() != STATE_STANDBY) || !has_control_authority) {
+        RCLCPP_DEBUG(
+                get_logger(),
+                "Waiting robot to reach standby state, or that program has control "
+                "authority"
+        );
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
 
-    //----- In M2.5 version or higher The following variables were added -----
-    for (int i = 0; i < 3; i++)
-        g_stDrState.bActualSW[i] = pCtrlIO->_tInput._iActualSW[i];
+    const bool is_emulator = host_ip == "127.0.0.1";
+    if (is_emulator) { RCLCPP_INFO(get_logger(), "Running in emulator mode"); }
+    if (!drfl.set_robot_mode(ROBOT_MODE_AUTONOMOUS)) {
+        RCLCPP_ERROR(get_logger(), "Unable to set robot in autonomous mode");
+        return CallbackReturn::FAILURE;
+    }
+    const ROBOT_SYSTEM sys = is_emulator ? ROBOT_SYSTEM_VIRTUAL : ROBOT_SYSTEM_REAL;
+    if (!drfl.set_robot_system(sys)) {
+        RCLCPP_ERROR(get_logger(), "Unable to set proper robot system (virtual/real)");
+        return CallbackReturn::FAILURE;
+    }
 
-    for (int i = 0; i < 2; i++){
-        g_stDrState.bActualSI[i] = pCtrlIO->_tInput._iActualSI[i];
-        g_stDrState.fActualAI[i] = pCtrlIO->_tInput._fActualAI[i];
-        g_stDrState.iActualAT[i] = pCtrlIO->_tInput._iActualAT[i];
-        g_stDrState.fTargetAO[i] = pCtrlIO->_tOutput._fTargetAO[i];
-        g_stDrState.iTargetAT[i] = pCtrlIO->_tOutput._iTargetAT[i];
-        g_stDrState.bActualES[i] = pCtrlIO->_tEncoder._iActualES[i];
-        g_stDrState.iActualED[i] = pCtrlIO->_tEncoder._iActualED[i];
-        g_stDrState.bActualER[i] = pCtrlIO->_tEncoder._iActualER[i];
-    }  
-    //-------------------------------------------------------------------------
+
+    // Real-time communication initialisation and setup
+    RCLCPP_INFO(
+            get_logger(),
+            "Connecting RT control on %s:%u",
+            host_ip.c_str(),
+            host_udp_port
+    );
+    if (!drfl.connect_rt_control(host_ip, host_udp_port)) {
+        RCLCPP_ERROR(get_logger(), "Unable to connect RT control stream");
+        return CallbackReturn::FAILURE;
+    }
+    RCLCPP_INFO(get_logger(), "Connected!");
+
+    const std::string version   = "v1.0";
+    const float       period    = 0.001;
+    const int         losscount = 4;
+    if (!drfl.set_rt_control_output(version, period, losscount)) {
+        RCLCPP_ERROR(get_logger(), "Unable to connect RT control stream");
+        return CallbackReturn::FAILURE;
+    }
+
+    if (!drfl.start_rt_control()) {
+        RCLCPP_ERROR(get_logger(), "Unable to start RT control");
+        return CallbackReturn::FAILURE;
+    }
+
+    RCLCPP_INFO(get_logger(), "Setting velocity and acceleration limits");
+    if (!drfl.set_velj_rt(_q_dot_limit.data())) return CallbackReturn::ERROR;
+    if (!drfl.set_accj_rt(_q_dot_dot_limit.data())) return CallbackReturn::ERROR;
+    RCLCPP_DEBUG_STREAM(
+            get_logger(), "Joint velocity limit: " << _q_dot_limit.transpose()
+    );
+    RCLCPP_DEBUG_STREAM(
+            get_logger(), "Joint acceleration limit: " << _q_dot_dot_limit.transpose()
+    );
+
+    drfl.set_safety_mode(SAFETY_MODE_AUTONOMOUS, SAFETY_MODE_EVENT_MOVE);
+
+    RCLCPP_INFO(get_logger(), "DSR hardware interface initialisation completed");
+    return CallbackReturn::SUCCESS;
 }
 
-// M2.4 or lower
-void DSRInterface::OnMonitoringDataCB(const LPMONITORING_DATA pData)
-{
-    // This function is called every 100 msec
-    // Only work within 50msec
-    //RCLCPP_INFO(rclcpp::get_logger("dsr_hw_interface2"),"DSRInterface::OnMonitoringDataCB");
+CallbackReturn
+DRHWInterface::on_shutdown(const rclcpp_lifecycle::State& /* prev_state */) {
+    RCLCPP_INFO(get_logger(), "Disconnecting RT control");
+    if (!drfl.disconnect_rt_control()) return CallbackReturn::ERROR;
+    RCLCPP_INFO(get_logger(), "Disconnecting communication with robot");
+    if (!drfl.close_connection()) return CallbackReturn::ERROR;
+    return CallbackReturn::SUCCESS;
+}
 
-    g_stDrState.nActualMode  = pData->_tCtrl._tState._iActualMode;                  // position control: 0, torque control: 1 ?????
-    g_stDrState.nActualSpace = pData->_tCtrl._tState._iActualSpace;                 // joint space: 0, task space: 1    
+std::vector<hardware_interface::StateInterface>
+DRHWInterface::export_state_interfaces() {
+    std::vector<hardware_interface::StateInterface> interfaces;
 
-    for (int i = 0; i < NUM_JOINT; i++){
-        if(pData){  
-            // joint         
-            g_stDrState.fCurrentPosj[i] = pData->_tCtrl._tJoint._fActualPos[i];     // Position Actual Value in INC     
-            g_stDrState.fCurrentVelj[i] = pData->_tCtrl._tJoint._fActualVel[i];     // Velocity Actual Value
-            g_stDrState.fJointAbs[i]    = pData->_tCtrl._tJoint._fActualAbs[i];     // Position Actual Value in ABS
-            g_stDrState.fJointErr[i]    = pData->_tCtrl._tJoint._fActualErr[i];     // Joint Error
-            g_stDrState.fTargetPosj[i]  = pData->_tCtrl._tJoint._fTargetPos[i];     // Target Position
-            g_stDrState.fTargetVelj[i]  = pData->_tCtrl._tJoint._fTargetVel[i];     // Target Velocity
-            // task
-            g_stDrState.fCurrentPosx[i]     = pData->_tCtrl._tTask._fActualPos[0][i];   //????? <---------이것 2개다 확인할 것  
-            g_stDrState.fCurrentToolPosx[i] = pData->_tCtrl._tTask._fActualPos[1][i];   //????? <---------이것 2개다 확인할 것  
-            g_stDrState.fCurrentVelx[i] = pData->_tCtrl._tTask._fActualVel[i];      // Velocity Actual Value
-            g_stDrState.fTaskErr[i]     = pData->_tCtrl._tTask._fActualErr[i];      // Task Error
-            g_stDrState.fTargetPosx[i]  = pData->_tCtrl._tTask._fTargetPos[i];      // Target Position
-            g_stDrState.fTargetVelx[i]  = pData->_tCtrl._tTask._fTargetVel[i];      // Target Velocity
-            // Torque
-            g_stDrState.fDynamicTor[i]  = pData->_tCtrl._tTorque._fDynamicTor[i];   // Dynamics Torque
-            g_stDrState.fActualJTS[i]   = pData->_tCtrl._tTorque._fActualJTS[i];    // Joint Torque Sensor Value
-            g_stDrState.fActualEJT[i]   = pData->_tCtrl._tTorque._fActualEJT[i];    // External Joint Torque
-            g_stDrState.fActualETT[i]   = pData->_tCtrl._tTorque._fActualETT[i];    // External Task Force/Torque
-
-            g_stDrState.nActualBK[i]    = pData->_tMisc._iActualBK[i];              // brake state     
-            g_stDrState.fActualMC[i]    = pData->_tMisc._fActualMC[i];              // motor input current
-            g_stDrState.fActualMT[i]    = pData->_tMisc._fActualMT[i];              // motor current temperature
-        }
-    }
-    g_stDrState.nSolutionSpace  = pData->_tCtrl._tTask._iSolutionSpace;             // Solution Space
-    g_stDrState.dSyncTime       = pData->_tMisc._dSyncTime;                         // inner clock counter  
-
-    for (int i = 5; i < NUM_BUTTON; i++){
-        if(pData){
-            g_stDrState.nActualBT[i]    = pData->_tMisc._iActualBT[i];              // robot button state
-        }
+    RCLCPP_INFO(get_logger(), "Registering position state interfaces");
+    for (int i{0}; i < 6; ++i) {
+        RCLCPP_DEBUG(get_logger(), "Registering joint %s", joint_names.at(i).c_str());
+        interfaces.emplace_back(
+                joint_names.at(i), hardware_interface::HW_IF_POSITION, &_q_state(i)
+        );
     }
 
-    for(int i = 0; i < 3; i++){
-        for(int j = 0; j < 3; j++){
-            if(pData){
-                g_stDrState.fRotationMatrix[j][i] = pData->_tCtrl._tTask._fRotationMatrix[j][i];    // Rotation Matrix
+    RCLCPP_INFO(get_logger(), "Registering velocity state interfaces");
+    for (int i{0}; i < 6; ++i) {
+        RCLCPP_DEBUG(get_logger(), "Registering joint %s", joint_names.at(i).c_str());
+        interfaces.emplace_back(
+                joint_names.at(i), hardware_interface::HW_IF_VELOCITY, &_q_dot_state(i)
+        );
+    }
+
+    RCLCPP_INFO(get_logger(), "Registering effort state interfaces");
+    for (int i{0}; i < 6; ++i) {
+        RCLCPP_DEBUG(get_logger(), "Registering joint %s", joint_names.at(i).c_str());
+        interfaces.emplace_back(
+                joint_names.at(i), hardware_interface::HW_IF_EFFORT, &_tau_state(i)
+        );
+    }
+
+    return interfaces;
+}
+
+std::vector<hardware_interface::CommandInterface>
+DRHWInterface::export_command_interfaces() {
+    std::vector<hardware_interface::CommandInterface> interfaces;
+
+    RCLCPP_INFO(get_logger(), "Registering position command interfaces");
+    for (int i{0}; i < 6; ++i) {
+        RCLCPP_DEBUG(get_logger(), "Registering joint %s", joint_names.at(i).c_str());
+        interfaces.emplace_back(
+                joint_names.at(i), hardware_interface::HW_IF_POSITION, &_q_cmd(i)
+        );
+    }
+
+    RCLCPP_INFO(get_logger(), "Registering velocity command interfaces");
+    for (int i{0}; i < 6; ++i) {
+        RCLCPP_DEBUG(get_logger(), "Registering joint %s", joint_names.at(i).c_str());
+        interfaces.emplace_back(
+                joint_names.at(i), hardware_interface::HW_IF_VELOCITY, &_q_dot_cmd(i)
+        );
+    }
+
+    RCLCPP_INFO(get_logger(), "Registering effort command interfaces");
+    for (int i{0}; i < 6; ++i) {
+        RCLCPP_DEBUG(get_logger(), "Registering joint %s", joint_names.at(i).c_str());
+        interfaces.emplace_back(
+                joint_names.at(i), hardware_interface::HW_IF_EFFORT, &_tau_cmd(i)
+        );
+    }
+
+    return interfaces;
+}
+
+hardware_interface::return_type
+DRHWInterface::perform_command_mode_switch(
+        const std::vector<std::string>& start_interfaces,
+        const std::vector<std::string>& stop_interfaces
+) {
+    const auto parent_ret =
+            hardware_interface::SystemInterface::perform_command_mode_switch(
+                    start_interfaces, stop_interfaces
+            );
+    if (parent_ret != return_type::OK) {
+        RCLCPP_ERROR(
+                get_logger(),
+                "Parent 'perform_command_mode_switch()' function call failed!"
+        );
+        return return_type::ERROR;
+    }
+
+    RCLCPP_DEBUG(get_logger(), "Called command mode switch");
+    if (start_interfaces.empty()) {
+        RCLCPP_DEBUG(get_logger(), "No control mode specified, leaving unchanged!");
+        return return_type::OK;
+    }
+
+    const std::string req_cmd_interface = start_interfaces[0];
+    const std::string mode = req_cmd_interface.substr(req_cmd_interface.find('/') + 1);
+
+    if (mode == hardware_interface::HW_IF_POSITION) {
+        RCLCPP_INFO(get_logger(), "Switching to position control");
+        _control_mode = POSITION;
+    } else if (mode == hardware_interface::HW_IF_VELOCITY) {
+        RCLCPP_INFO(get_logger(), "Switching to velocity control");
+        _control_mode = VELOCITY;
+    } else if (mode == hardware_interface::HW_IF_EFFORT) {
+        RCLCPP_INFO(get_logger(), "Switching to torque control");
+        _control_mode = TORQUE;
+    } else {
+        RCLCPP_ERROR(get_logger(), "Unknown control mode '%s'", mode.data());
+        return hardware_interface::return_type::ERROR;
+    }
+
+    return return_type::OK;
+}
+
+return_type
+DRHWInterface::read(const rclcpp::Time& time, const rclcpp::Duration& period) {
+    auto deg_to_rad = [](const float& data) -> double { return data * M_PI / 180.0; };
+
+    const LPRT_OUTPUT_DATA_LIST data = drfl.read_data_rt();
+    // Joint position
+    std::transform(
+            data->actual_joint_position,
+            data->actual_joint_position + 6,
+            _q_state.begin(),
+            deg_to_rad
+    );
+    // Joint velocity
+    std::transform(
+            data->actual_joint_velocity,
+            data->actual_joint_velocity + 6,
+            _q_dot_state.begin(),
+            deg_to_rad
+    );
+    // Joint torque
+    std::transform(
+            data->external_joint_torque,
+            data->external_joint_torque + 6,
+            _tau_state.begin(),
+            float_to_double
+    );
+
+    // Gravity compensation torque
+    std::transform(
+            data->gravity_torque,
+            data->gravity_torque + 6,
+            _tau_grav.begin(),
+            float_to_double
+    );
+    return return_type::OK;
+}
+
+return_type
+DRHWInterface::write(const rclcpp::Time& /*time*/, const rclcpp::Duration& /*period*/) {
+    auto rad_to_deg = [](const double& data) -> float { return data * 180.0 / M_PI; };
+
+    Vec6float cmd;
+    Vec6float empty({None, None, None, None, None, None});
+    switch (_control_mode) {
+        case NOT_SET:
+            break;
+        case POSITION:
+            std::transform(_q_cmd.begin(), _q_cmd.end(), cmd.data(), rad_to_deg);
+            drfl.servoj_rt(cmd.data(), empty.data(), empty.data(), 0.0);
+            break;
+        case VELOCITY:
+            std::transform(
+                    _q_dot_cmd.begin(), _q_dot_cmd.end(), cmd.data(), rad_to_deg
+            );
+            drfl.speedj_rt(cmd.data(), empty.data(), 0.0);
+            break;
+        case TORQUE:
+            // use "empty" as storage for the desired torque w/o gravity compensation
+            std::transform(
+                    _tau_cmd.begin(), _tau_cmd.end(), empty.data(), double_to_float
+            );
+            cmd = _tau_grav + empty;
+            drfl.torque_rt(cmd.data(), 0.0);
+            break;
+    }
+    return return_type::OK;
+}
+
+//   ____      _ _ _                _
+//  / ___|__ _| | | |__   __ _  ___| | _____
+// | |   / _` | | | '_ \ / _` |/ __| |/ / __|
+// | |__| (_| | | | |_) | (_| | (__|   <\__ \
+//  \____\__,_|_|_|_.__/ \__,_|\___|_|\_\___/
+//
+void
+callback::on_tp_popup(LPMESSAGE_POPUP tPopup) {
+    cout << "Popup Message: " << tPopup->_szText << endl;
+    cout << "Message Level: " << tPopup->_iLevel << endl;
+    cout << "Button Type: " << tPopup->_iBtnType << endl;
+}
+
+void
+callback::on_tp_log(const char* strLog) {
+    cout << "Log Message: " << strLog << endl;
+}
+
+void
+callback::on_tp_progress(LPMESSAGE_PROGRESS tProgress) {
+    cout << "Progress cnt : " << (int)tProgress->_iTotalCount << endl;
+    cout << "Current cnt : " << (int)tProgress->_iCurrentCount << endl;
+}
+
+void
+callback::on_tp_get_user_input(LPMESSAGE_INPUT tInput) {
+    cout << "User Input : " << tInput->_szText << endl;
+    cout << "Data Type : " << (int)tInput->_iType << endl;
+}
+
+void
+callback::on_homing_completed() {
+    cout << "homing completed" << endl;
+}
+
+void
+callback::on_monitoring_data(const LPMONITORING_DATA pData) {
+    return;
+    cout << "# monitoring 0 data " << pData->_tCtrl._tTask._fActualPos[0][0]
+         << pData->_tCtrl._tTask._fActualPos[0][1]
+         << pData->_tCtrl._tTask._fActualPos[0][2]
+         << pData->_tCtrl._tTask._fActualPos[0][3]
+         << pData->_tCtrl._tTask._fActualPos[0][4]
+         << pData->_tCtrl._tTask._fActualPos[0][5] << endl;
+}
+
+void
+callback::on_monitoring_data_exchange(const LPMONITORING_DATA_EX pData) {
+    return;
+    cout << "# monitoring 1 data " << pData->_tCtrl._tWorld._fTargetPos[0]
+         << pData->_tCtrl._tWorld._fTargetPos[1] << pData->_tCtrl._tWorld._fTargetPos[2]
+         << pData->_tCtrl._tWorld._fTargetPos[3] << pData->_tCtrl._tWorld._fTargetPos[4]
+         << pData->_tCtrl._tWorld._fTargetPos[5] << endl;
+}
+
+void
+callback::on_monitoring_ctrl_io(const LPMONITORING_CTRLIO pData) {
+    return;
+    cout << "# monitoring ctrl 0 data" << endl;
+    for (int i = 0; i < 16; i++) { cout << (int)pData->_tInput._iActualDI[i] << endl; }
+}
+
+void
+callback::on_monitoring_ctrl_io_exchange(const LPMONITORING_CTRLIO_EX pData) {
+    return;
+    cout << "# monitoring ctrl 1 data" << endl;
+    for (int i = 0; i < 16; i++) { cout << (int)pData->_tInput._iActualDI[i] << endl; }
+    for (int i = 0; i < 16; i++) { cout << (int)pData->_tOutput._iTargetDO[i] << endl; }
+}
+
+void
+callback::on_log_alarm(LPLOG_ALARM tLog) {
+    cout << "Alarm Info: "
+         << "group(" << (unsigned int)tLog->_iGroup << "), index(" << tLog->_iIndex
+         << "), param(" << tLog->_szParam[0] << "), param(" << tLog->_szParam[1]
+         << "), param(" << tLog->_szParam[2] << ")" << endl;
+}
+
+void
+callback::on_program_stopped(const PROGRAM_STOP_CAUSE cause) {
+    cout << "Program stopped (cause " << cause << ")" << endl;
+}
+
+void
+callback::on_tp_initialising_completed() {
+    tp_initialisation_completed = true;
+    drfl.ManageAccessControl(MANAGE_ACCESS_CONTROL_FORCE_REQUEST);
+}
+
+void
+callback::on_monitoring_state(const ROBOT_STATE state) {
+    switch ((unsigned char)state) {
+        case STATE_EMERGENCY_STOP:
+            // popup
+            break;
+        case STATE_STANDBY:
+        case STATE_MOVING:
+        case STATE_TEACHING:
+            break;
+        case STATE_SAFE_STOP:
+            if (has_control_authority) {
+                drfl.SetSafeStopResetType(SAFE_STOP_RESET_TYPE_DEFAULT);
+                drfl.SetRobotControl(CONTROL_RESET_SAFET_STOP);
             }
-        }
-    }
-
-    for (int i = 0; i < NUM_FLANGE_IO; i++){
-        if(pData){
-            g_stDrState.bFlangeDigitalInput[i]  = pData->_tMisc._iActualDI[i];      // Digital Input data             
-            g_stDrState.bFlangeDigitalOutput[i] = pData->_tMisc._iActualDO[i];      // Digital output data
-        }
-    }
-}
-
-// M2.5 or higher    
-void DSRInterface::OnMonitoringDataExCB(const LPMONITORING_DATA_EX pData)
-{
-    // This function is called every 100 msec
-    // Only work within 50msec
-    // RCLCPP_INFO(rclcpp::get_logger("dsr_hw_interface2"),"    DSRInterface::OnMonitoringDataExCB");
-
-    g_stDrState.nActualMode  = pData->_tCtrl._tState._iActualMode;                  // position control: 0, torque control: 1 ?????
-    g_stDrState.nActualSpace = pData->_tCtrl._tState._iActualSpace;                 // joint space: 0, task space: 1    
-
-    for (int i = 0; i < NUM_JOINT; i++){
-        if(pData){  
-            // joint         
-            g_stDrState.fCurrentPosj[i] = pData->_tCtrl._tJoint._fActualPos[i];     // Position Actual Value in INC     
-            g_stDrState.fCurrentVelj[i] = pData->_tCtrl._tJoint._fActualVel[i];     // Velocity Actual Value
-            g_stDrState.fJointAbs[i]    = pData->_tCtrl._tJoint._fActualAbs[i];     // Position Actual Value in ABS
-            g_stDrState.fJointErr[i]    = pData->_tCtrl._tJoint._fActualErr[i];     // Joint Error
-            g_stDrState.fTargetPosj[i]  = pData->_tCtrl._tJoint._fTargetPos[i];     // Target Position
-            g_stDrState.fTargetVelj[i]  = pData->_tCtrl._tJoint._fTargetVel[i];     // Target Velocity
-            // task
-            g_stDrState.fCurrentPosx[i]     = pData->_tCtrl._tTask._fActualPos[0][i];   //????? <---------이것 2개다 확인할 것  
-            g_stDrState.fCurrentToolPosx[i] = pData->_tCtrl._tTask._fActualPos[1][i];   //????? <---------이것 2개다 확인할 것  
-            g_stDrState.fCurrentVelx[i] = pData->_tCtrl._tTask._fActualVel[i];      // Velocity Actual Value
-            g_stDrState.fTaskErr[i]     = pData->_tCtrl._tTask._fActualErr[i];      // Task Error
-            g_stDrState.fTargetPosx[i]  = pData->_tCtrl._tTask._fTargetPos[i];      // Target Position
-            g_stDrState.fTargetVelx[i]  = pData->_tCtrl._tTask._fTargetVel[i];      // Target Velocity
-            // Torque
-            g_stDrState.fDynamicTor[i]  = pData->_tCtrl._tTorque._fDynamicTor[i];   // Dynamics Torque
-            g_stDrState.fActualJTS[i]   = pData->_tCtrl._tTorque._fActualJTS[i];    // Joint Torque Sensor Value
-            g_stDrState.fActualEJT[i]   = pData->_tCtrl._tTorque._fActualEJT[i];    // External Joint Torque
-            g_stDrState.fActualETT[i]   = pData->_tCtrl._tTorque._fActualETT[i];    // External Task Force/Torque
-
-            g_stDrState.nActualBK[i]    = pData->_tMisc._iActualBK[i];              // brake state     
-            g_stDrState.fActualMC[i]    = pData->_tMisc._fActualMC[i];              // motor input current
-            g_stDrState.fActualMT[i]    = pData->_tMisc._fActualMT[i];              // motor current temperature
-        }
-    }
-    g_stDrState.nSolutionSpace  = pData->_tCtrl._tTask._iSolutionSpace;             // Solution Space
-    g_stDrState.dSyncTime       = pData->_tMisc._dSyncTime;                         // inner clock counter  
-
-    for (int i = 5; i < NUM_BUTTON; i++){
-        if(pData){
-            g_stDrState.nActualBT[i]    = pData->_tMisc._iActualBT[i];              // robot button state
-        }
-    }
-
-    for(int i = 0; i < 3; i++){
-        for(int j = 0; j < 3; j++){
-            if(pData){
-                g_stDrState.fRotationMatrix[j][i] = pData->_tCtrl._tTask._fRotationMatrix[j][i];    // Rotation Matrix
+            break;
+        case STATE_SAFE_OFF:
+            cout << "State STATE_SAFE_OFF\n";
+            if (has_control_authority) { drfl.SetRobotControl(CONTROL_SERVO_ON); }
+            break;
+        case STATE_SAFE_STOP2:
+            cout << "State STATE_SAFE_STOP2\n";
+            if (has_control_authority) {
+                drfl.SetRobotControl(CONTROL_RECOVERY_SAFE_STOP);
             }
-        }
+            break;
+        case STATE_SAFE_OFF2:
+            cout << "State STATE_SAFE_OFF2\n";
+            if (has_control_authority) {
+                drfl.SetRobotControl(CONTROL_RECOVERY_SAFE_OFF);
+            }
+            break;
+        case STATE_RECOVERY:
+            // Drfl.SetRobotControl(CONTROL_RESET_RECOVERY);
+            break;
+        default:
+            break;
     }
-
-    for (int i = 0; i < NUM_FLANGE_IO; i++){
-        if(pData){
-            g_stDrState.bFlangeDigitalInput[i]  = pData->_tMisc._iActualDI[i];      // Digital Input data             
-            g_stDrState.bFlangeDigitalOutput[i] = pData->_tMisc._iActualDO[i];      // Digital output data
-        }
-    }
-
-    //----- In M2.5 version or higher The following variables were added -----
-    for (int i = 0; i < NUM_JOINT; i++){
-        g_stDrState.fActualW2B[i] = pData->_tCtrl._tWorld._fActualW2B[i];
-        g_stDrState.fCurrentVelW[i] = pData->_tCtrl._tWorld._fActualVel[i];
-        g_stDrState.fWorldETT[i] = pData->_tCtrl._tWorld._fActualETT[i];
-        g_stDrState.fTargetPosW[i] = pData->_tCtrl._tWorld._fTargetPos[i];
-        g_stDrState.fTargetVelW[i] = pData->_tCtrl._tWorld._fTargetVel[i];
-        g_stDrState.fCurrentVelU[i] = pData->_tCtrl._tWorld._fActualVel[i];
-        g_stDrState.fUserETT[i] = pData->_tCtrl._tUser._fActualETT[i];
-        g_stDrState.fTargetPosU[i] = pData->_tCtrl._tUser._fTargetPos[i];
-        g_stDrState.fTargetVelU[i] = pData->_tCtrl._tUser._fTargetVel[i];
-    }    
-
-    for(int i = 0; i < 2; i++){
-        for(int j = 0; j < 6; j++){
-            g_stDrState.fCurrentPosW[i][j] = pData->_tCtrl._tWorld._fActualPos[i][j];
-            g_stDrState.fCurrentPosU[i][j] = pData->_tCtrl._tUser._fActualPos[i][j];
-        }
-    }
-
-    for(int i = 0; i < 3; i++){
-        for(int j = 0; j < 3; j++){
-            g_stDrState.fRotationMatrixWorld[j][i] = pData->_tCtrl._tWorld._fRotationMatrix[j][i];
-            g_stDrState.fRotationMatrixUser[j][i] = pData->_tCtrl._tUser._fRotationMatrix[j][i];
-        }
-    }
-
-    g_stDrState.iActualUCN = pData->_tCtrl._tUser._iActualUCN;
-    g_stDrState.iParent    = pData->_tCtrl._tUser._iParent;
-    //-------------------------------------------------------------------------
+    return;
 }
 
-void DSRInterface::OnMonitoringModbusCB (const LPMONITORING_MODBUS pModbus)
-{
-    g_stDrState.nRegCount = pModbus->_iRegCount;
-    for (int i = 0; i < pModbus->_iRegCount; i++){
-        cout << "[callback OnMonitoringModbusCB] " << pModbus->_tRegister[i]._szSymbol <<": " << pModbus->_tRegister[i]._iValue<< endl;
-        g_stDrState.strModbusSymbol[i] = pModbus->_tRegister[i]._szSymbol;
-        g_stDrState.nModbusValue[i]    = pModbus->_tRegister[i]._iValue;
+void
+callback::on_monitoring_access_control(const MONITORING_ACCESS_CONTROL control) {
+    switch (control) {
+        case MONITORING_ACCESS_CONTROL_REQUEST:
+            assert(drfl.ManageAccessControl(MANAGE_ACCESS_CONTROL_RESPONSE_NO));
+            // Drfl.ManageAccessControl(MANAGE_ACCESS_CONTROL_RESPONSE_YES);
+            break;
+        case MONITORING_ACCESS_CONTROL_GRANT:
+            cout << "Access control grant" << endl;
+            has_control_authority = TRUE;
+            callback::on_monitoring_state(drfl.GetRobotState());
+            break;
+        case MONITORING_ACCESS_CONTROL_DENY:
+        case MONITORING_ACCESS_CONTROL_LOSS:
+            cout << "Access control revoked" << endl;
+            has_control_authority = FALSE;
+            if (tp_initialisation_completed) {
+                drfl.ManageAccessControl(MANAGE_ACCESS_CONTROL_FORCE_REQUEST);
+            }
+            break;
+        default:
+            break;
     }
 }
-
-void DSRInterface::OnMonitoringStateCB(const ROBOT_STATE eState)
-{
-    //This function is called when the state changes.
-    //RCLCPP_INFO(rclcpp::get_logger("dsr_hw_interface2"),"DSRInterface::OnMonitoringStateCB");    
-    // Only work within 50msec
-    
-    switch((unsigned char)eState)
-    {
-#if 0 // TP initializing logic, Don't use in API level. (If you want to operate without TP, use this logic)       
-    case eSTATE_NOT_READY:
-    if (g_bHasControlAuthority) Drfl.set_robot_control(CONTROL_INIT_CONFIG);
-        break;
-    case eSTATE_INITIALIZING:
-        // add initalizing logic
-        if (g_bHasControlAuthority) Drfl.set_robot_control(CONTROL_ENABLE_OPERATION);
-        break;
-#endif      
-    case STATE_EMERGENCY_STOP:
-        // popup
-        break;
-    case STATE_STANDBY:
-    case STATE_MOVING:
-    case STATE_TEACHING:
-        break;
-    case STATE_SAFE_STOP:
-        if (g_bHasControlAuthority) {
-            Drfl.set_safe_stop_reset_type(SAFE_STOP_RESET_TYPE_DEFAULT);
-            Drfl.set_robot_control(CONTROL_RESET_SAFET_STOP);
-            Drfl.set_safety_mode(SAFETY_MODE_AUTONOMOUS,SAFETY_MODE_EVENT_MOVE);
-        }
-        break;
-    case STATE_SAFE_OFF:
-        if (g_bHasControlAuthority){
-            Drfl.set_robot_control(CONTROL_SERVO_ON);
-            Drfl.set_robot_mode(ROBOT_MODE_AUTONOMOUS);   //Idle Servo Off 후 servo on 하는 상황 발생 시 set_robot_mode 명령을 전송해 manual 로 전환. add 2020/04/28
-        } 
-        break;
-    case STATE_SAFE_STOP2:
-        if (g_bHasControlAuthority) Drfl.set_robot_control(CONTROL_RECOVERY_SAFE_STOP);
-        break;
-    case STATE_SAFE_OFF2:
-        if (g_bHasControlAuthority) {
-            Drfl.set_robot_control(CONTROL_RECOVERY_SAFE_OFF);
-        }
-        break;
-    case STATE_RECOVERY:
-        Drfl.set_robot_control(CONTROL_RESET_RECOVERY);
-        break;
-    default:
-        break;
-    }
-
-    cout << "[callback OnMonitoringStateCB] current state: " << GetRobotStateString((int)eState) << endl;
-    g_stDrState.nRobotState = (int)eState;
-    strncpy(g_stDrState.strRobotState, GetRobotStateString((int)eState), MAX_SYMBOL_SIZE); 
-}
-
-void DSRInterface::OnMonitoringAccessControlCB(const MONITORING_ACCESS_CONTROL eAccCtrl)
-{
-    // Only work within 50msec
-
-    cout << "[callback OnMonitoringAccessControlCB] eAccCtrl: " << eAccCtrl << endl;
-    switch(eAccCtrl)
-    {
-    case MONITORING_ACCESS_CONTROL_REQUEST:
-        Drfl.ManageAccessControl(MANAGE_ACCESS_CONTROL_RESPONSE_NO);
-        //Drfl.TransitControlAuth(MANaGE_ACCESS_CONTROL_RESPONSE_YES);
-        break;
-    case MONITORING_ACCESS_CONTROL_GRANT:
-        RCLCPP_INFO(rclcpp::get_logger("dsr_hw_interface2"),"_______________________________________________\n");   
-        RCLCPP_INFO(rclcpp::get_logger("dsr_hw_interface2"),"    Access control granted ");
-        RCLCPP_INFO(rclcpp::get_logger("dsr_hw_interface2"),"_______________________________________________\n");   
-        g_bHasControlAuthority = TRUE;
-        OnMonitoringStateCB(Drfl.GetRobotState());
-        break;
-    case MONITORING_ACCESS_CONTROL_DENY:
-        RCLCPP_INFO(rclcpp::get_logger("dsr_hw_interface2"),"_______________________________________________\n");   
-        RCLCPP_INFO(rclcpp::get_logger("dsr_hw_interface2"),"    Access control deny ");
-        RCLCPP_INFO(rclcpp::get_logger("dsr_hw_interface2"),"_______________________________________________\n");   
-        break;
-    case MONITORING_ACCESS_CONTROL_LOSS:
-        g_bHasControlAuthority = FALSE;
-        if (g_bTpInitailizingComplted) {
-            Drfl.ManageAccessControl(MANAGE_ACCESS_CONTROL_REQUEST);
-        }
-        break;
-    default:
-        break;
-    }
-    g_stDrState.nAccessControl = (int)eAccCtrl;
-}
-
-void DSRInterface::OnLogAlarm(LPLOG_ALARM pLogAlarm)
-{
-    //This function is called when an error occurs.
-    auto PubRobotError = s_node_->create_publisher<dsr_msgs2::msg::RobotError>("error", 100);
-    dsr_msgs2::msg::RobotError msg;
-
-    switch(pLogAlarm->_iLevel)
-    {
-    case LOG_LEVEL_SYSINFO:
-        RCLCPP_INFO(rclcpp::get_logger("dsr_hw_interface2"),"[callback OnLogAlarm]");
-        RCLCPP_INFO(rclcpp::get_logger("dsr_hw_interface2")," level : %d",(unsigned int)pLogAlarm->_iLevel);
-        RCLCPP_INFO(rclcpp::get_logger("dsr_hw_interface2")," group : %d",(unsigned int)pLogAlarm->_iGroup);
-        RCLCPP_INFO(rclcpp::get_logger("dsr_hw_interface2")," index : %d", pLogAlarm->_iIndex);
-        RCLCPP_INFO(rclcpp::get_logger("dsr_hw_interface2")," param : %s", pLogAlarm->_szParam[0] );
-        RCLCPP_INFO(rclcpp::get_logger("dsr_hw_interface2")," param : %s", pLogAlarm->_szParam[1] );
-        RCLCPP_INFO(rclcpp::get_logger("dsr_hw_interface2")," param : %s", pLogAlarm->_szParam[2] );
-        break;
-    case LOG_LEVEL_SYSWARN:
-        RCLCPP_WARN(rclcpp::get_logger("dsr_hw_interface2"),"[callback OnLogAlarm]");
-        RCLCPP_WARN(rclcpp::get_logger("dsr_hw_interface2")," level : %d",(unsigned int)pLogAlarm->_iLevel);
-        RCLCPP_WARN(rclcpp::get_logger("dsr_hw_interface2")," group : %d",(unsigned int)pLogAlarm->_iGroup);
-        RCLCPP_WARN(rclcpp::get_logger("dsr_hw_interface2")," index : %d", pLogAlarm->_iIndex);
-        RCLCPP_WARN(rclcpp::get_logger("dsr_hw_interface2")," param : %s", pLogAlarm->_szParam[0] );
-        RCLCPP_WARN(rclcpp::get_logger("dsr_hw_interface2")," param : %s", pLogAlarm->_szParam[1] );
-        RCLCPP_WARN(rclcpp::get_logger("dsr_hw_interface2")," param : %s", pLogAlarm->_szParam[2] );
-        break;
-    case LOG_LEVEL_SYSERROR:
-    default:
-        RCLCPP_ERROR(rclcpp::get_logger("dsr_hw_interface2"),"[callback OnLogAlarm]");
-        RCLCPP_ERROR(rclcpp::get_logger("dsr_hw_interface2")," level : %d",(unsigned int)pLogAlarm->_iLevel);
-        RCLCPP_ERROR(rclcpp::get_logger("dsr_hw_interface2")," group : %d",(unsigned int)pLogAlarm->_iGroup);
-        RCLCPP_ERROR(rclcpp::get_logger("dsr_hw_interface2")," index : %d", pLogAlarm->_iIndex);
-        RCLCPP_ERROR(rclcpp::get_logger("dsr_hw_interface2")," param : %s", pLogAlarm->_szParam[0] );
-        RCLCPP_ERROR(rclcpp::get_logger("dsr_hw_interface2")," param : %s", pLogAlarm->_szParam[1] );
-        RCLCPP_ERROR(rclcpp::get_logger("dsr_hw_interface2")," param : %s", pLogAlarm->_szParam[2] );
-        break;
-    }
-
-    g_stDrError.nLevel=(unsigned int)pLogAlarm->_iLevel;
-    g_stDrError.nGroup=(unsigned int)pLogAlarm->_iGroup;
-    g_stDrError.nCode=pLogAlarm->_iIndex;
-    strncpy(g_stDrError.strMsg1, pLogAlarm->_szParam[0], MAX_STRING_SIZE);
-    strncpy(g_stDrError.strMsg2, pLogAlarm->_szParam[1], MAX_STRING_SIZE);
-    strncpy(g_stDrError.strMsg3, pLogAlarm->_szParam[2], MAX_STRING_SIZE);
-
-    msg.level=g_stDrError.nLevel;
-    msg.group=g_stDrError.nGroup;
-    msg.code=g_stDrError.nCode;
-    msg.msg1=g_stDrError.strMsg1;
-    msg.msg2=g_stDrError.strMsg2;
-    msg.msg3=g_stDrError.strMsg3;
-
-    PubRobotError->publish(msg);
-}
-
-
 
 #include "pluginlib/class_list_macros.hpp"
 
 PLUGINLIB_EXPORT_CLASS(
-  dsr_hardware2::DRHWInterface, hardware_interface::SystemInterface)
-      
-
+        dsr_hardware2::DRHWInterface, hardware_interface::SystemInterface
+)
