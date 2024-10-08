@@ -85,7 +85,7 @@ def main(args=None):
     node = SendPoseServoLGz()
 
     try: 
-        rclpy.spin(node)  # 노드 실행
+        rclpy.spin(node)
     except KeyboardInterrupt:
         node.destroy_node()
     finally:

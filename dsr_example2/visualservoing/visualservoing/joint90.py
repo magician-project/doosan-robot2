@@ -21,8 +21,8 @@ class Joint90(Node):
 
     def send_request(self):
         self.req.pos = [0.0, 0.0, 90.0, 0.0, 90.0, 0.0]
-        self.req.vel = 80.0
-        self.req.acc = 80.0
+        self.req.vel = 100.0
+        self.req.acc = 100.0
         self.future = self.cli.call_async(self.req)
 
 def main(args=None):

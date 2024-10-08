@@ -30,7 +30,7 @@ setup(
     maintainer='Chemin Ahn',
     maintainer_email='chemx3937@gmail.com',
     description='Visual Servoing',
-    license='TODO: License declaration',
+    license='BSD',
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [                

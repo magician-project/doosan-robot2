@@ -465,7 +465,7 @@
     <include>
         <pose>1.0 0 0.25 0 0 0</pose>  
         <name>markerbox1</name>
-        <uri>model://description/markerbox1.sdf</uri> <!--TODO hardcode path (search 'gazebo_model_path')-->
+        <uri>model://description/markerbox1.sdf</uri>
         
     </include>
 

@@ -10,7 +10,6 @@ from launch_ros.actions import Node
 
 def generate_launch_description():
     return LaunchDescription([
-        # detect_marker_gz 노드 실행
         Node(
             package='visualservoing',
             executable='detect_marker_gz',
@@ -18,7 +17,6 @@ def generate_launch_description():
             output='screen'
         ),
         
-        # send_pose_servol_gz 노드 실행
         Node(
             package='visualservoing',
             executable='send_pose_servol_gz',

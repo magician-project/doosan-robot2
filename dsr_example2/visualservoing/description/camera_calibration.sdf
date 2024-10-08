@@ -467,7 +467,7 @@
     <include>
         <pose>1.0 0.0 0.4 0 0 0</pose>  
         <name>checker_board</name>
-        <uri>model://doosan-robot2/dsr_example2/visualservoing/description/checker_board.sdf</uri>
+        <uri>model://description/checker_board.sdf</uri>
     </include>
 
   </world>

@@ -1,8 +1,5 @@
 # Overview    
-This package provides the visual servoing example using Doosan robots in the ROS2(Humble) environment.
-
-    ※ Currently, ROS2 related packages are being updated rapidly. 
-       Doosan packages will also be updated from time to time and features will be upgraded.
+This package provides the visual servoing example using Doosan robots in the ROS 2(Humble) environment.
 
 
 ![Visual_Servoing_FlowChart drawio](https://github.com/user-attachments/assets/51d8284c-c446-4942-a8f7-d9390151b2d0)
@@ -35,12 +32,12 @@ ros2 launch visualservoing dsr_bringup2_visual_servoing_gazebo.launch.py
 
 2. Move to the home position
 ```bash
-ros2 run dsr_visualservoing_ex joint90
+ros2 run visualservoing joint90
 ```
 
 3. Run the visual servoing example, when the cobot reaches the home position ([0, 0, 90, 0, 90, 0]).
 ```bash
-ros2 launch dsr_visualservoing_ex  visual_servoing_gz.launch.py
+ros2 launch visualservoing  visual_servoing_gz.launch.py
 ```
 
 
@@ -65,7 +62,7 @@ sudo apt install ros-humble-image-pipeline
 
 3. Run `camera_calibration.launch.py`:
 ```bash
-ros2 launch dsr_visualsercoing_ex camera_calibration.launch.py
+ros2 launch visualservoing camera_calibration.launch.py
 ```
 
 4. Run the Camera Calibration Node:

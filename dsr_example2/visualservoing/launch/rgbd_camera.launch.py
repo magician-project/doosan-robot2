@@ -45,7 +45,6 @@ def generate_launch_description():
         PythonLaunchDescriptionSource(
             os.path.join(pkg_ros_gz_sim, 'launch', 'gz_sim.launch.py')),
         launch_arguments={
-            #'gz_args': '-r sensors_demo.sdf'
             'gz_args': '-r ' + descp_path + '/description/visual_servoing.sdf'
 
         }.items(),
@@ -59,20 +58,6 @@ def generate_launch_description():
         arguments=[LaunchConfiguration('image_topic')],
         condition=IfCondition(LaunchConfiguration('rqt'))
     )
-
-    # ######################################################################
-    # # RViz
-    # pkg_ros_gz_sim_demos = get_package_share_directory('ros_gz_sim_demos')
-
-    # rviz = Node(
-    #     package='rviz2',
-    #     executable='rviz2',
-    #     arguments=[
-    #         '-d', os.path.join(pkg_ros_gz_sim_demos, 'rviz', 'rgbd_camera_bridge.rviz')
-    #     ],
-    #     condition=IfCondition(LaunchConfiguration('rviz'))
-    # )
-    # ######################################################################
 
 
     # Bridge
@@ -89,18 +74,9 @@ def generate_launch_description():
         DeclareLaunchArgument('rqt', default_value='true',
                               description='Open RQt.'),
 
-        # ###################################################
-        # DeclareLaunchArgument('rviz', default_value='true',
-        #                       description='Open RViz.'),
-        # ###################################################
-
 
         DeclareLaunchArgument('image_topic', default_value='/camera',
                               description='Topic to start viewing in RQt.'),
         bridge,
         rqt,
-
-        # ####
-        # rviz
-        # ####
     ])

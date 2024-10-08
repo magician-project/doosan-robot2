@@ -103,7 +103,7 @@ class DetectMarkerGz(Node):
 
             ret = cv.aruco.estimatePoseSingleMarkers(
                 [corners[marker_index]], self.marker_size, self.camera_matrix, self.dist_coeffs
-            )  # 마커의 자세 추정
+            )
             (rvec, tvec) = (ret[0], ret[1])
 
             tvec4drawAxis = np.round(tvec*1000, 4)
@@ -144,17 +144,14 @@ class DetectMarkerGz(Node):
             rpy_cobot= np.round(rpy_cobot * (180/np.pi), 4)
 
 
-            #z값 +200mm 보정, pitch 값 180도 반대로 설정
-            self.current_xyz_msg = Vector3(x=float(tvec_cobot_frame[0]), y=float(tvec_cobot_frame[1]), z=float(tvec_cobot_frame[2]+ 200))   # z축 Offset: 200mm
-            self.current_rxyz_msg = Vector3(x=rpy_cobot[0], y=rpy_cobot[1]+180, z=rpy_cobot[2]) # 마커를 바라보게 하기위해 pitch값 + 180도
+            self.current_xyz_msg = Vector3(x=float(tvec_cobot_frame[0]), y=float(tvec_cobot_frame[1]), z=float(tvec_cobot_frame[2]+ 200))
+            self.current_rxyz_msg = Vector3(x=rpy_cobot[0], y=rpy_cobot[1]+180, z=rpy_cobot[2])
             self.current_marker_pose = Float32MultiArray()
             self.current_marker_pose.data = [self.current_xyz_msg.x, self.current_xyz_msg.y, self.current_xyz_msg.z,
                                              self.current_rxyz_msg.x, self.current_rxyz_msg.y, self.current_rxyz_msg.z]
 
             current_time = self.get_clock().now()
 
-
-            # self.get_logger().info("\nPublishing marker ID: {0}, \nxyz: {1}, \nrxyz: {2}".format(self.current_marker_id, self.current_xyz_msg, self.current_rxyz_msg))
             self.marker_pose_pub.publish(self.current_marker_pose)
             self.marker_id_pub.publish(Int32(data=int(self.current_marker_id)))
             self.previous_marker_id = self.current_marker_id
@@ -163,8 +160,6 @@ class DetectMarkerGz(Node):
             self.last_published_xyz = self.current_xyz_msg
             self.last_published_rxyz = self.current_rxyz_msg
 
-
-            # x:red, y: green, z: blue
             cv.aruco.drawDetectedMarkers(cv_image, [corners[marker_index]])  
             cv.aruco.drawAxis(
                 cv_image,
