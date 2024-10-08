@@ -1,0 +1,35 @@
+name: Humble Build System
+
+on:
+  push:
+    branches:
+      - humble-devel
+  pull_request:
+    branches:
+      - humble-devel
+
+jobs:
+  build-environment:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - uses: ros-tooling/setup-ros@v0.7
+        with:
+          required-ros-distributions: humble
+
+      - name: Install dependencies
+        run: |
+          apt-get update -y
+          apt-get install -y libpoco-dev libyaml-cpp-dev wget
+
+      - uses: actions/checkout@v4
+
+      - name: Build environment
+        run: |
+          rosdep update
+          rosdep install --from-paths . --ignore-src --rosdistro humble -r -y
+          source /opt/ros/humble/setup.bash
+          colcon build --symlink-install --cmake-args -DCMAKE_BUILD_TYPE=Debug
+          source install/setup.bash
+
+
