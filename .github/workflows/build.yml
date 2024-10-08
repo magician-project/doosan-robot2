@@ -19,15 +19,15 @@ jobs:
 
       - name: Install dependencies
         run: |
-          apt-get update -y
-          apt-get install -y libpoco-dev libyaml-cpp-dev wget
+          sudo apt-get update
+          sudo apt-get install -y libpoco-dev libyaml-cpp-dev wget
 
       - uses: actions/checkout@v4
 
       - name: Build environment
         run: |
           rosdep update
-          rosdep install --from-paths . --ignore-src --rosdistro humble -r -y
+          rosdep install --from-paths . --ignore-src --rosdistro $ROS_DISTRO -y
           source /opt/ros/humble/setup.bash
           colcon build --symlink-install --cmake-args -DCMAKE_BUILD_TYPE=Debug
           source install/setup.bash
