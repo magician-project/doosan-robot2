@@ -26,9 +26,9 @@ jobs:
 
       - name: Build environment
         run: |
+          source /opt/ros/humble/setup.bash
           rosdep update
           rosdep install --from-paths . --ignore-src --rosdistro $ROS_DISTRO -y
-          source /opt/ros/humble/setup.bash
           colcon build --symlink-install --cmake-args -DCMAKE_BUILD_TYPE=Debug
           source install/setup.bash
 
